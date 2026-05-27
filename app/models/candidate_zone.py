@@ -1,5 +1,6 @@
 from datetime import datetime
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, SmallInteger, String, Text
+from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
 from app.db.base import Base
 
@@ -44,3 +45,5 @@ class CandidateZone(Base):
     coverage_gap_m = Column(Float, nullable=True)
     model_version = Column(String(20), nullable=True)
     inference_date = Column(DateTime, nullable=True)
+
+    district = relationship("District", back_populates="candidate_zones")

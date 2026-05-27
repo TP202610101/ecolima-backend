@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Float, ForeignKey, Integer, SmallInteger
+from sqlalchemy.orm import relationship
 from app.db.base import Base
 
 
@@ -18,3 +19,5 @@ class WasteGeneration(Base):
     collection_coverage_pct = Column(Float, nullable=True)
     informal_recyclers_count = Column(Integer, nullable=True)
     total_waste_tons_year = Column(Float, nullable=True)
+
+    district = relationship("District", back_populates="waste_generation")

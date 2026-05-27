@@ -1,5 +1,6 @@
 from datetime import datetime
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
 from app.db.base import Base
 
@@ -19,3 +20,5 @@ class RecyclingPoint(Base):
     verified = Column(Boolean, nullable=False, default=False)
     source = Column(String(50), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    district = relationship("District", back_populates="recycling_points")

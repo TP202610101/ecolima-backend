@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Float, ForeignKey, Integer, SmallInteger
+from sqlalchemy.orm import relationship
 from app.db.base import Base
 
 
@@ -22,3 +23,5 @@ class SocioeconomicIndicator(Base):
     housing_type_apt_pct = Column(Float, nullable=True)
     hacinamiento_idx = Column(Float, nullable=True)
     pct_poverty = Column(Float, nullable=True)
+
+    district = relationship("District", back_populates="socioeconomic_indicators")
