@@ -1,8 +1,8 @@
 migrate:
-	alembic upgrade head
+	python -m alembic upgrade head
 
 seed:
-	python -m alembic.runtime.migration
+	python alembic/seeds/seed_districts.py
 
 test:
 	pytest
