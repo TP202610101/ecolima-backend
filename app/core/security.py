@@ -7,6 +7,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 settings = Settings()
 
 ALGORITHM = "HS256"
+revoked_tokens: set[str] = set()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -33,3 +34,11 @@ def decode_access_token(token: str) -> dict:
         return payload
     except JWTError as exc:
         raise exc
+
+
+def revoke_token(token: str) -> None:
+    revoked_tokens.add(token)
+
+
+def is_token_revoked(token: str) -> bool:
+    return token in revoked_tokens

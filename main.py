@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import auth, users, datasets, map_, ml
+from app.api.v1.endpoints import auth, users, datasets, map as map_, ml
 
 app = FastAPI(title="EcoLima Backend")
 

@@ -9,6 +9,10 @@ class UserCreate(BaseModel):
     role: str = "analista"
 
 
+class UserRoleUpdate(BaseModel):
+    role: str
+
+
 class UserResponse(BaseModel):
     user_id: int
     email: EmailStr
