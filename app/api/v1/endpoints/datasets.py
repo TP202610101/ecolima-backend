@@ -5,9 +5,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import require_role, get_current_user
 from app.db.session import get_session
 from app.models.user import User
-from app.schemas.dataset import DatasetListItem, DatasetResponse, DatasetValidationResponse
+from app.schemas.dataset import (
+    DatasetDeleteRowsRequest,
+    DatasetDeleteRowsResponse,
+    DatasetEditCellsRequest,
+    DatasetEditCellsResponse,
+    DatasetListItem,
+    DatasetResponse,
+    DatasetValidationResponse,
+)
 from app.services.dataset_service import (
     create_dataset_record,
+    delete_dataset_rows,
+    delete_incomplete_rows,
+    edit_dataset_cells,
     get_datasets,
     read_dataset_file,
     save_uploaded_dataset_file,
@@ -56,6 +67,43 @@ async def validate_dataset_endpoint(
     db: AsyncSession = Depends(get_session),
 ):
     return await validate_dataset(db, dataset_id)
+
+
+@router.delete("/{dataset_id}/rows", response_model=DatasetDeleteRowsResponse)
+async def delete_dataset_rows_endpoint(
+    dataset_id: int,
+    payload: DatasetDeleteRowsRequest,
+    confirm: bool = False,
+    user: User = Depends(require_role("admin", "cientifico")),
+    db: AsyncSession = Depends(get_session),
+):
+    return await delete_dataset_rows(
+        db=db,
+        dataset_id=dataset_id,
+        row_indices=payload.row_indices,
+        reason=payload.reason,
+        user_id=user.user_id,
+        confirm=confirm,
+    )
+
+
+@router.delete("/{dataset_id}/rows/incomplete", response_model=DatasetDeleteRowsResponse)
+async def delete_incomplete_rows_endpoint(
+    dataset_id: int,
+    user: User = Depends(require_role("admin", "cientifico")),
+    db: AsyncSession = Depends(get_session),
+):
+    return await delete_incomplete_rows(db=db, dataset_id=dataset_id, user_id=user.user_id)
+
+
+@router.patch("/{dataset_id}/cells", response_model=DatasetEditCellsResponse)
+async def edit_dataset_cells_endpoint(
+    dataset_id: int,
+    payload: DatasetEditCellsRequest,
+    user: User = Depends(require_role("admin", "cientifico")),
+    db: AsyncSession = Depends(get_session),
+):
+    return await edit_dataset_cells(db=db, dataset_id=dataset_id, edits=[edit.model_dump() for edit in payload.edits], user_id=user.user_id)
 
 
 @router.get("/", response_model=list[DatasetListItem])

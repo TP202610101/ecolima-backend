@@ -1,12 +1,14 @@
 import io
 import json
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from fastapi import HTTPException, status, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit_log import AuditLog
 from app.models.dataset import Dataset
 
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -183,6 +185,253 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
                     errors.append({"row_index": row_index, "column": "verified", "value": value, "error": "Debe ser bool o convertible a bool"})
 
     return errors
+
+
+def _write_dataset_file(dataset_id: int, df: pd.DataFrame) -> Path:
+    path = _get_dataset_file_path(dataset_id)
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Archivo del dataset no encontrado.",
+        )
+
+    if path.suffix.lower() == ".csv":
+        df.to_csv(path, index=False, encoding="utf-8")
+    elif path.suffix.lower() == ".xlsx":
+        df.to_excel(path, index=False, engine="openpyxl")
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Formato de archivo de dataset no soportado.",
+        )
+
+    return path
+
+
+def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    return df.replace(r"^\s*$", pd.NA, regex=True)
+
+
+def _coerce_int(value: Any) -> int:
+    if value is None or pd.isna(value):
+        raise ValueError("Valor faltante")
+    if isinstance(value, (int, float)) and float(value).is_integer():
+        return int(value)
+    if isinstance(value, str):
+        if value.strip() == "":
+            raise ValueError("Valor faltante")
+        return int(value)
+    raise ValueError("No convertible a entero")
+
+
+def _validate_edit_value(column: str, value: Any) -> Any:
+    if column == "latitude":
+        if value is None or pd.isna(value):
+            raise ValueError("latitude no puede ser nulo")
+        latitude = float(value)
+        if not (-13.0 <= latitude <= -11.5):
+            raise ValueError("latitude debe estar entre -13.0 y -11.5")
+        return latitude
+
+    if column == "longitude":
+        if value is None or pd.isna(value):
+            raise ValueError("longitude no puede ser nulo")
+        longitude = float(value)
+        if not (-77.5 <= longitude <= -76.5):
+            raise ValueError("longitude debe estar entre -77.5 y -76.5")
+        return longitude
+
+    if column == "district_id":
+        return _coerce_int(value)
+
+    if column == "verified":
+        if value is None or pd.isna(value):
+            return None
+        return _coerce_bool(value)
+
+    return value
+
+
+def _create_audit_log_entry(
+    db: AsyncSession,
+    user_id: int,
+    action: str,
+    dataset_id: int | None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    audit = AuditLog(
+        user_id=user_id,
+        action=action,
+        dataset_id=dataset_id,
+        details=json.dumps(details or {}, ensure_ascii=False, default=str),
+    )
+    db.add(audit)
+
+
+async def _persist_dataset_changes(db: AsyncSession, dataset: Dataset, row_count: int | None = None) -> None:
+    if row_count is not None:
+        dataset.row_count = row_count
+    dataset.status = "pending"
+    dataset.error_summary = None
+    await db.commit()
+    await db.refresh(dataset)
+
+
+async def delete_dataset_rows(
+    db: AsyncSession,
+    dataset_id: int,
+    row_indices: list[int],
+    reason: str,
+    user_id: int,
+    confirm: bool = False,
+) -> dict:
+    if not row_indices:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Debe proveer al menos un row_index para eliminar.",
+        )
+
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+
+    df, _ = _load_dataset_file(dataset_id)
+    invalid_indices = [idx for idx in row_indices if idx not in list(df.index)]
+    if invalid_indices:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"invalid_row_indices": invalid_indices},
+        )
+
+    deleted_count = len(set(row_indices))
+    remaining_rows = len(df) - deleted_count
+
+    if not confirm:
+        return {"deleted_count": deleted_count, "remaining_rows": remaining_rows}
+
+    df = df.drop(index=row_indices).reset_index(drop=True)
+    _write_dataset_file(dataset_id, df)
+    await _persist_dataset_changes(db, dataset, row_count=len(df))
+    _create_audit_log_entry(
+        db,
+        user_id=user_id,
+        action="delete_rows",
+        dataset_id=dataset_id,
+        details={
+            "row_indices": sorted(set(row_indices)),
+            "reason": reason,
+            "deleted_count": deleted_count,
+        },
+    )
+    await db.commit()
+
+    return {"deleted_count": deleted_count, "remaining_rows": len(df)}
+
+
+async def delete_incomplete_rows(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+
+    df, _ = _load_dataset_file(dataset_id)
+    required = ["latitude", "longitude", "district_id"]
+    missing_columns = [col for col in required if col not in df.columns]
+    if missing_columns:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"missing_columns": missing_columns},
+        )
+
+    df = _normalize_dataframe(df)
+    mask = (
+        df["latitude"].isna() | df["longitude"].isna() | df["district_id"].isna()
+    )
+    deleted_count = int(mask.sum())
+    if deleted_count > 0:
+        df = df[~mask].reset_index(drop=True)
+        _write_dataset_file(dataset_id, df)
+        await _persist_dataset_changes(db, dataset, row_count=len(df))
+        _create_audit_log_entry(
+            db,
+            user_id=user_id,
+            action="delete_incomplete_rows",
+            dataset_id=dataset_id,
+            details={"deleted_count": deleted_count},
+        )
+        await db.commit()
+
+    return {"deleted_count": deleted_count, "remaining_rows": len(df)}
+
+
+async def edit_dataset_cells(
+    db: AsyncSession,
+    dataset_id: int,
+    edits: list[dict],
+    user_id: int,
+) -> dict:
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+
+    df, _ = _load_dataset_file(dataset_id)
+    if df.empty:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El dataset no contiene filas para editar.",
+        )
+
+    applied: list[dict[str, Any]] = []
+    for edit in edits:
+        row_index = edit.get("row_index")
+        column = edit.get("column")
+        new_value = edit.get("new_value")
+
+        if row_index not in list(df.index):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"row_index": row_index, "error": "Índice de fila no existe."},
+            )
+        if column not in df.columns:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"column": column, "error": "Columna no existe en el dataset."},
+            )
+
+        try:
+            validated_value = _validate_edit_value(column, new_value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"row_index": row_index, "column": column, "error": str(exc)},
+            )
+
+        old_value = df.at[row_index, column]
+        df.at[row_index, column] = validated_value
+        applied.append(
+            {
+                "row_index": row_index,
+                "column": column,
+                "old_value": None if pd.isna(old_value) else old_value,
+                "new_value": None if pd.isna(validated_value) else validated_value,
+            }
+        )
+
+    _write_dataset_file(dataset_id, df)
+    await _persist_dataset_changes(db, dataset)
+
+    for edit_record in applied:
+        _create_audit_log_entry(
+            db,
+            user_id=user_id,
+            action="edit_cell",
+            dataset_id=dataset_id,
+            details=edit_record,
+        )
+    await db.commit()
+
+    return {"edited_count": len(applied), "edits_applied": applied}
 
 
 async def create_dataset_record(

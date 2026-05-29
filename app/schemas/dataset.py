@@ -32,3 +32,32 @@ class DatasetValidationResponse(BaseModel):
     error_rows: int
 
     model_config = {"from_attributes": True}
+
+
+class DatasetDeleteRowsRequest(BaseModel):
+    row_indices: list[int]
+    reason: str
+
+
+class DatasetDeleteRowsResponse(BaseModel):
+    deleted_count: int
+    remaining_rows: int
+
+    model_config = {"from_attributes": True}
+
+
+class DatasetEditCell(BaseModel):
+    row_index: int
+    column: str
+    new_value: object
+
+
+class DatasetEditCellsRequest(BaseModel):
+    edits: list[DatasetEditCell]
+
+
+class DatasetEditCellsResponse(BaseModel):
+    edited_count: int
+    edits_applied: list[dict]
+
+    model_config = {"from_attributes": True}
