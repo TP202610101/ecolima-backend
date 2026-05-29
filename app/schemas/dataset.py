@@ -20,3 +20,15 @@ class DatasetListItem(BaseModel):
     status: str
 
     model_config = {"from_attributes": True}
+
+
+class DatasetValidationResponse(BaseModel):
+    dataset_id: int
+    valid: bool
+    missing_columns: list[str]
+    type_errors: list[dict]
+    row_count: int
+    valid_rows: int
+    error_rows: int
+
+    model_config = {"from_attributes": True}

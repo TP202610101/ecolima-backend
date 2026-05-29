@@ -157,6 +157,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Uploads and local data
+uploads/
+
 # Spyder project settings
 .spyderproject
 .spyproject
