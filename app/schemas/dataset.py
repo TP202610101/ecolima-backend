@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import List
 
 
 class DatasetResponse(BaseModel):
@@ -61,3 +60,27 @@ class DatasetEditCellsResponse(BaseModel):
     edits_applied: list[dict]
 
     model_config = {"from_attributes": True}
+
+
+class DatasetCommitResponse(BaseModel):
+    inserted: int
+    skipped_duplicates: int
+    errors: list[dict]
+
+
+class AuditEntry(BaseModel):
+    audit_id: int
+    action: str
+    user_id: int
+    created_at: str | None
+    details: dict | None = None
+
+
+class DatasetHistoryResponse(BaseModel):
+    dataset_id: int
+    filename: str
+    uploads: list[AuditEntry]
+    validations: list[AuditEntry]
+    edits: list[AuditEntry]
+    commit: AuditEntry | None
+    exported_at: str | None

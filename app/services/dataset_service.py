@@ -1,15 +1,18 @@
 import io
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from fastapi import HTTPException, status, UploadFile
-from sqlalchemy import select
+from geoalchemy2.elements import WKTElement
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
 from app.models.dataset import Dataset
+from app.models.recycling_point import RecyclingPoint
 
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
@@ -509,3 +512,200 @@ async def get_datasets(db: AsyncSession, skip: int = 0, limit: int = 100) -> lis
         select(Dataset).order_by(Dataset.uploaded_at.desc()).offset(skip).limit(limit)
     )
     return result.scalars().all()
+
+
+def log_action(
+    db: AsyncSession,
+    user_id: int,
+    action: str,
+    dataset_id: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    _create_audit_log_entry(db, user_id, action, dataset_id, details)
+
+
+async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+
+    if dataset.status == "committed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "ALREADY_COMMITTED", "message": "El dataset ya fue comprometido."},
+        )
+
+    df, _ = _load_dataset_file(dataset_id)
+    missing = _validate_columns(df)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "INVALID_COLUMNS", "message": "Faltan columnas obligatorias", "missing": missing},
+        )
+
+    df = _normalize_dataframe(df)
+
+    dist_result = await db.execute(text("SELECT district_id FROM districts"))
+    valid_district_ids = {row[0] for row in dist_result.fetchall()}
+
+    inserted = 0
+    skipped_duplicates = 0
+    errors: list[dict] = []
+
+    for index, row in df.iterrows():
+        row_index = int(index)
+
+        if (
+            pd.isna(row.get("latitude"))
+            or pd.isna(row.get("longitude"))
+            or pd.isna(row.get("district_id"))
+            or pd.isna(row.get("source"))
+        ):
+            errors.append({"row_index": row_index, "error": "Campos obligatorios con valor nulo"})
+            continue
+
+        try:
+            latitude = float(row["latitude"])
+            longitude = float(row["longitude"])
+            district_id = int(float(str(row["district_id"])))
+            source = str(row["source"]).strip()
+        except (TypeError, ValueError) as exc:
+            errors.append({"row_index": row_index, "error": str(exc)})
+            continue
+
+        if district_id not in valid_district_ids:
+            errors.append({"row_index": row_index, "error": f"district_id {district_id} no encontrado"})
+            continue
+
+        dup = await db.execute(
+            text(
+                "SELECT point_id FROM recycling_points "
+                "WHERE ABS(latitude - :lat) < 0.0001 AND ABS(longitude - :lon) < 0.0001 LIMIT 1"
+            ),
+            {"lat": latitude, "lon": longitude},
+        )
+        if dup.first() is not None:
+            skipped_duplicates += 1
+            continue
+
+        def _opt(col: str) -> str | None:
+            if col not in df.columns:
+                return None
+            val = row[col]
+            return None if pd.isna(val) else str(val).strip() or None
+
+        verified_val: bool = False
+        if "verified" in df.columns and not pd.isna(row["verified"]):
+            try:
+                coerced = _coerce_bool(row["verified"])
+                verified_val = bool(coerced) if coerced is not None else False
+            except ValueError:
+                verified_val = False
+
+        point = RecyclingPoint(
+            district_id=district_id,
+            latitude=latitude,
+            longitude=longitude,
+            geometry=WKTElement(f"POINT({longitude} {latitude})", srid=4326),
+            point_type=_opt("point_type"),
+            address=_opt("address"),
+            operator=_opt("operator"),
+            materials_accepted=_opt("materials_accepted"),
+            verified=verified_val,
+            source=source,
+        )
+        db.add(point)
+        inserted += 1
+
+    dataset.status = "committed"
+    _create_audit_log_entry(
+        db,
+        user_id,
+        "commit",
+        dataset_id,
+        {"inserted": inserted, "skipped_duplicates": skipped_duplicates, "error_count": len(errors)},
+    )
+    await db.commit()
+
+    return {"inserted": inserted, "skipped_duplicates": skipped_duplicates, "errors": errors}
+
+
+async def export_dataset(
+    db: AsyncSession, dataset_id: int, fmt: str, user_id: int
+) -> tuple[bytes, str]:
+    if fmt not in ("csv", "xlsx"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El parámetro format debe ser 'csv' o 'xlsx'.",
+        )
+
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+
+    df, _ = _load_dataset_file(dataset_id)
+
+    now = datetime.utcnow()
+    df["exported_at"] = now.isoformat()
+
+    date_str = now.strftime("%Y-%m-%d")
+    base_name = Path(dataset.original_filename or dataset.filename).stem
+
+    if fmt == "xlsx":
+        out = io.BytesIO()
+        df.to_excel(out, index=False, engine="openpyxl")
+        out.seek(0)
+        file_bytes = out.read()
+        filename = f"{base_name}_limpio_{date_str}.xlsx"
+    else:
+        file_bytes = df.to_csv(index=False, encoding="utf-8").encode("utf-8")
+        filename = f"{base_name}_limpio_{date_str}.csv"
+
+    _create_audit_log_entry(db, user_id, "export", dataset_id, {"format": fmt, "exported_at": now.isoformat()})
+    await db.commit()
+
+    return file_bytes, filename
+
+
+async def get_dataset_history(db: AsyncSession, dataset_id: int) -> dict:
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+
+    result = await db.execute(
+        select(AuditLog)
+        .where(AuditLog.dataset_id == dataset_id)
+        .order_by(AuditLog.created_at.asc())
+    )
+    logs = result.scalars().all()
+
+    def _entry(log: AuditLog) -> dict:
+        details = None
+        if log.details:
+            try:
+                details = json.loads(log.details)
+            except (json.JSONDecodeError, TypeError):
+                details = {"raw": log.details}
+        return {
+            "audit_id": log.audit_id,
+            "action": log.action,
+            "user_id": log.user_id,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "details": details,
+        }
+
+    uploads = [_entry(l) for l in logs if l.action == "upload"]
+    validations = [_entry(l) for l in logs if l.action in ("validate", "validation")]
+    edits = [_entry(l) for l in logs if l.action in ("edit_cell", "delete_rows", "delete_incomplete_rows")]
+    commit_entries = [_entry(l) for l in logs if l.action == "commit"]
+    export_entries = [_entry(l) for l in logs if l.action == "export"]
+
+    return {
+        "dataset_id": dataset.dataset_id,
+        "filename": dataset.filename,
+        "uploads": uploads,
+        "validations": validations,
+        "edits": edits,
+        "commit": commit_entries[-1] if commit_entries else None,
+        "exported_at": export_entries[-1]["created_at"] if export_entries else None,
+    }

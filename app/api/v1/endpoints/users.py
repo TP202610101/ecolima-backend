@@ -8,7 +8,7 @@ from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserRoleUpdate
 
 router = APIRouter()
-ALLOWED_ROLES = {"admin", "analista", "cientifico", "ciudadano"}
+ALLOWED_ROLES = {"admin", "analista", "ciudadano"}
 
 
 @router.get("/", response_model=list[UserResponse])

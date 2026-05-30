@@ -1,25 +1,33 @@
+import io
 import json
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_role, get_current_user
 from app.db.session import get_session
 from app.models.user import User
 from app.schemas.dataset import (
+    DatasetCommitResponse,
     DatasetDeleteRowsRequest,
     DatasetDeleteRowsResponse,
     DatasetEditCellsRequest,
     DatasetEditCellsResponse,
+    DatasetHistoryResponse,
     DatasetListItem,
     DatasetResponse,
     DatasetValidationResponse,
 )
 from app.services.dataset_service import (
+    commit_dataset,
     create_dataset_record,
     delete_dataset_rows,
     delete_incomplete_rows,
     edit_dataset_cells,
+    export_dataset,
+    get_dataset_history,
     get_datasets,
+    log_action,
     read_dataset_file,
     save_uploaded_dataset_file,
     validate_dataset,
@@ -31,7 +39,7 @@ router = APIRouter()
 @router.post("/upload", response_model=DatasetResponse)
 async def upload_dataset(
     file: UploadFile = File(...),
-    user: User = Depends(require_role("admin", "cientifico")),
+    user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     dataframe, file_size_bytes, raw_bytes = await read_dataset_file(file)
@@ -50,6 +58,8 @@ async def upload_dataset(
     )
 
     save_uploaded_dataset_file(dataset.dataset_id, file.filename, raw_bytes)
+    log_action(db, user.user_id, "upload", dataset.dataset_id, {"filename": file.filename, "row_count": row_count})
+    await db.commit()
 
     return DatasetResponse(
         dataset_id=dataset.dataset_id,
@@ -63,7 +73,7 @@ async def upload_dataset(
 @router.get("/{dataset_id}/validate", response_model=DatasetValidationResponse)
 async def validate_dataset_endpoint(
     dataset_id: int,
-    user: User = Depends(require_role("admin", "cientifico")),
+    user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     return await validate_dataset(db, dataset_id)
@@ -74,7 +84,7 @@ async def delete_dataset_rows_endpoint(
     dataset_id: int,
     payload: DatasetDeleteRowsRequest,
     confirm: bool = False,
-    user: User = Depends(require_role("admin", "cientifico")),
+    user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     return await delete_dataset_rows(
@@ -90,7 +100,7 @@ async def delete_dataset_rows_endpoint(
 @router.delete("/{dataset_id}/rows/incomplete", response_model=DatasetDeleteRowsResponse)
 async def delete_incomplete_rows_endpoint(
     dataset_id: int,
-    user: User = Depends(require_role("admin", "cientifico")),
+    user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     return await delete_incomplete_rows(db=db, dataset_id=dataset_id, user_id=user.user_id)
@@ -100,7 +110,7 @@ async def delete_incomplete_rows_endpoint(
 async def edit_dataset_cells_endpoint(
     dataset_id: int,
     payload: DatasetEditCellsRequest,
-    user: User = Depends(require_role("admin", "cientifico")),
+    user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     return await edit_dataset_cells(db=db, dataset_id=dataset_id, edits=[edit.model_dump() for edit in payload.edits], user_id=user.user_id)
@@ -126,3 +136,41 @@ async def list_datasets(
             )
         )
     return response
+
+
+@router.post("/{dataset_id}/commit", response_model=DatasetCommitResponse)
+async def commit_dataset_endpoint(
+    dataset_id: int,
+    user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    result = await commit_dataset(db=db, dataset_id=dataset_id, user_id=user.user_id)
+    return DatasetCommitResponse(**result)
+
+
+@router.get("/{dataset_id}/export")
+async def export_dataset_endpoint(
+    dataset_id: int,
+    format: str = "csv",
+    user: User = Depends(require_role("admin", "analista")),
+    db: AsyncSession = Depends(get_session),
+):
+    file_bytes, filename = await export_dataset(db=db, dataset_id=dataset_id, fmt=format, user_id=user.user_id)
+    if format == "xlsx":
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        media_type = "text/csv"
+    return StreamingResponse(
+        io.BytesIO(file_bytes),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{dataset_id}/history", response_model=DatasetHistoryResponse)
+async def get_dataset_history_endpoint(
+    dataset_id: int,
+    user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    return await get_dataset_history(db=db, dataset_id=dataset_id)
