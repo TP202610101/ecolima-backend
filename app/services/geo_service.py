@@ -378,3 +378,109 @@ async def get_nearby_points_geojson(
         for row in rows
     ]
     return {"type": "FeatureCollection", "features": features}
+
+
+# ── Pipeline ML — queries PostGIS ─────────────────────────────────────────────
+
+async def calculate_is_suitable(db: AsyncSession, threshold_m: int = 200) -> dict:
+    """
+    Etiqueta candidate_zones con is_suitable = 1/0 según si hay un recycling_point
+    a ≤ threshold_m metros. Solo actualiza zonas en distritos con datos reales;
+    el resto queda NULL y no entra al training set.
+    ::geography garantiza que el umbral sea en metros, no en grados.
+    """
+    await db.execute(
+        text("""
+            UPDATE candidate_zones cz
+            SET is_suitable = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM recycling_points rp
+                    WHERE ST_DWithin(
+                        rp.geometry::geography,
+                        cz.geometry::geography,
+                        :threshold_m
+                    )
+                ) THEN 1
+                ELSE 0
+            END
+            WHERE cz.district_id IN (
+                SELECT DISTINCT district_id FROM recycling_points
+            )
+        """),
+        {"threshold_m": threshold_m},
+    )
+    await db.commit()
+
+    stats = (
+        await db.execute(
+            text("""
+                SELECT
+                    COUNT(*) FILTER (WHERE is_suitable IS NOT NULL) AS updated_zones,
+                    COUNT(*) FILTER (WHERE is_suitable = 1)         AS positive_labels,
+                    COUNT(*) FILTER (WHERE is_suitable = 0)         AS negative_labels,
+                    COUNT(*) FILTER (WHERE is_suitable IS NULL)     AS null_zones
+                FROM candidate_zones
+            """)
+        )
+    ).mappings().first()
+
+    return {
+        "updated_zones":   int(stats["updated_zones"]),
+        "positive_labels": int(stats["positive_labels"]),
+        "negative_labels": int(stats["negative_labels"]),
+        "null_zones":      int(stats["null_zones"]),
+    }
+
+
+async def calculate_coverage_gaps(db: AsyncSession) -> dict:
+    """
+    Actualiza coverage_gap_m (Sección C) y dist_to_nearest_point_m (Sección B)
+    con la distancia mínima al recycling_point más cercano para cada celda.
+    FROM-subquery calcula la distancia una sola vez por zona.
+    ::geography garantiza metros exactos, no grados.
+    """
+    result = await db.execute(
+        text("""
+            UPDATE candidate_zones cz
+            SET
+                coverage_gap_m          = sub.dist_m,
+                dist_to_nearest_point_m = sub.dist_m
+            FROM (
+                SELECT
+                    cz2.zone_id,
+                    MIN(
+                        ST_Distance(rp.geometry::geography, cz2.geometry::geography)
+                    ) AS dist_m
+                FROM candidate_zones cz2
+                CROSS JOIN recycling_points rp
+                GROUP BY cz2.zone_id
+            ) sub
+            WHERE cz.zone_id = sub.zone_id
+        """)
+    )
+    await db.commit()
+    return {"updated_zones": result.rowcount if result.rowcount >= 0 else 0}
+
+
+async def calculate_existing_points_500m(db: AsyncSession) -> dict:
+    """
+    Cuenta recycling_points en buffer de 500m por celda y actualiza
+    existing_points_500m (Sección B). Valor 0 cuando no hay puntos cercanos.
+    ::geography garantiza que los 500m sean metros, no grados.
+    """
+    result = await db.execute(
+        text("""
+            UPDATE candidate_zones cz
+            SET existing_points_500m = (
+                SELECT COUNT(*)::int
+                FROM recycling_points rp
+                WHERE ST_DWithin(
+                    rp.geometry::geography,
+                    cz.geometry::geography,
+                    500
+                )
+            )
+        """)
+    )
+    await db.commit()
+    return {"updated_zones": result.rowcount if result.rowcount >= 0 else 0}
