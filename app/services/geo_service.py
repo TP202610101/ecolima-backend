@@ -4,8 +4,24 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.candidate_zone import CandidateZone
 from app.models.district import District
 from app.models.recycling_point import RecyclingPoint
+
+_HEATMAP_METRICS: dict[str, str] = {
+    "density": "population_density",
+    "priority": "ml_score",
+    "gap": "dist_to_nearest_point_m",
+}
+
+_MATERIAL_KEYWORDS: dict[str, list[str]] = {
+    "plastic":    ["plástico", "plastico", "plastic"],
+    "paper":      ["papel", "paper", "cartón", "carton", "cardboard"],
+    "glass":      ["vidrio", "glass", "cristal"],
+    "metal":      ["metal", "aluminio", "aluminum", "lata"],
+    "organic":    ["orgánico", "organico", "organic"],
+    "electronic": ["electrónico", "electronico", "electronic", "eee", "raee"],
+}
 
 
 def _parse_geom(geom_json: str | None) -> dict | None:
@@ -111,6 +127,201 @@ async def get_districts_geojson(db: AsyncSession) -> dict:
                 "district_id": row["district_id"],
                 "district_name": row["district_name"],
                 "area_km2": row["area_km2"],
+            },
+        }
+        for row in rows
+    ]
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _parse_materials_breakdown(all_materials: str) -> dict:
+    if not all_materials:
+        return {}
+    entries = [e.strip().lower() for e in all_materials.split("|||") if e.strip()]
+    return {
+        key: cnt
+        for key, terms in _MATERIAL_KEYWORDS.items()
+        if (cnt := sum(1 for e in entries if any(t in e for t in terms))) > 0
+    }
+
+
+async def get_filtered_points_geojson(
+    db: AsyncSession,
+    district_id: int | None = None,
+    material: str | None = None,
+    point_type: str | None = None,
+    verified: bool | None = None,
+) -> dict:
+    query = select(
+        RecyclingPoint.point_id,
+        RecyclingPoint.point_type,
+        RecyclingPoint.address,
+        RecyclingPoint.operator,
+        RecyclingPoint.materials_accepted,
+        RecyclingPoint.verified,
+        RecyclingPoint.source,
+        RecyclingPoint.district_id,
+        func.ST_AsGeoJSON(RecyclingPoint.geometry).label("geometry_json"),
+    )
+    if district_id is not None:
+        query = query.where(RecyclingPoint.district_id == district_id)
+    if material:
+        query = query.where(RecyclingPoint.materials_accepted.ilike(f"%{material}%"))
+    if point_type:
+        query = query.where(RecyclingPoint.point_type.ilike(f"%{point_type}%"))
+    if verified is not None:
+        query = query.where(RecyclingPoint.verified.is_(verified))
+
+    rows = (await db.execute(query)).mappings().all()
+    features = [
+        {
+            "type": "Feature",
+            "geometry": _parse_geom(row["geometry_json"]),
+            "properties": {
+                "point_id": row["point_id"],
+                "point_type": row["point_type"],
+                "address": row["address"],
+                "operator": row["operator"],
+                "materials_accepted": row["materials_accepted"],
+                "verified": row["verified"],
+                "source": row["source"],
+                "district_id": row["district_id"],
+            },
+        }
+        for row in rows
+    ]
+    return {"type": "FeatureCollection", "features": features}
+
+
+async def get_district_stats(db: AsyncSession, district_id: int) -> dict:
+    dist_result = await db.execute(
+        select(District.district_name).where(District.district_id == district_id)
+    )
+    dist_row = dist_result.first()
+    if dist_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Distrito no encontrado.")
+
+    stmt = text("""
+        WITH point_stats AS (
+            SELECT
+                COUNT(*)::int                                       AS total_points,
+                COUNT(*) FILTER (WHERE verified = true)::int        AS verified_points,
+                STRING_AGG(materials_accepted, '|||')               AS all_materials
+            FROM recycling_points
+            WHERE district_id = :district_id
+        ),
+        zone_stats AS (
+            SELECT
+                COUNT(*) FILTER (WHERE is_suitable = 1)::float      AS suitable_count,
+                COUNT(*) FILTER (WHERE is_suitable IS NOT NULL)::float AS labeled_count,
+                AVG(dist_to_nearest_point_m)                        AS avg_distance_to_nearest_m
+            FROM candidate_zones
+            WHERE district_id = :district_id
+        )
+        SELECT
+            ps.total_points,
+            ps.verified_points,
+            ps.all_materials,
+            CASE WHEN zs.labeled_count > 0
+                 THEN ROUND((zs.suitable_count / zs.labeled_count * 100)::numeric, 1)
+                 ELSE NULL
+            END AS coverage_pct,
+            CASE WHEN zs.avg_distance_to_nearest_m IS NOT NULL
+                 THEN ROUND(zs.avg_distance_to_nearest_m::numeric, 1)
+                 ELSE NULL
+            END AS avg_distance_to_nearest_m
+        FROM point_stats ps CROSS JOIN zone_stats zs
+    """)
+    row = (await db.execute(stmt, {"district_id": district_id})).mappings().first()
+
+    return {
+        "district_id": district_id,
+        "district_name": dist_row[0],
+        "total_points": row["total_points"] or 0,
+        "verified_points": row["verified_points"] or 0,
+        "materials_breakdown": _parse_materials_breakdown(row["all_materials"] or ""),
+        "coverage_pct": float(row["coverage_pct"]) if row["coverage_pct"] is not None else None,
+        "avg_distance_to_nearest_m": (
+            float(row["avg_distance_to_nearest_m"])
+            if row["avg_distance_to_nearest_m"] is not None
+            else None
+        ),
+    }
+
+
+async def get_comparison_geojson(db: AsyncSession) -> dict:
+    current = await get_points_geojson(db)
+
+    query = select(
+        CandidateZone.zone_id,
+        CandidateZone.centroid_lat,
+        CandidateZone.centroid_lon,
+        CandidateZone.priority_label,
+        CandidateZone.recommendation_reason,
+        CandidateZone.coverage_gap_m,
+        CandidateZone.district_id,
+        func.ST_AsGeoJSON(CandidateZone.geometry).label("geometry_json"),
+    ).where(CandidateZone.is_recommended.is_(True))
+
+    rows = (await db.execute(query)).mappings().all()
+    recommended_features = [
+        {
+            "type": "Feature",
+            "geometry": _parse_geom(row["geometry_json"]),
+            "properties": {
+                "zone_id": row["zone_id"],
+                "centroid_lat": row["centroid_lat"],
+                "centroid_lon": row["centroid_lon"],
+                "priority_label": row["priority_label"],
+                "recommendation_reason": row["recommendation_reason"],
+                "coverage_gap_m": row["coverage_gap_m"],
+                "district_id": row["district_id"],
+            },
+        }
+        for row in rows
+    ]
+    return {
+        "current": current,
+        "recommended": {"type": "FeatureCollection", "features": recommended_features},
+    }
+
+
+async def get_heatmap_geojson(
+    db: AsyncSession,
+    district_id: int | None = None,
+    metric: str = "density",
+) -> dict:
+    if metric not in _HEATMAP_METRICS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"metric debe ser uno de: {list(_HEATMAP_METRICS.keys())}",
+        )
+
+    metric_col = getattr(CandidateZone, _HEATMAP_METRICS[metric])
+    query = select(
+        CandidateZone.zone_id,
+        CandidateZone.district_id,
+        CandidateZone.centroid_lat,
+        CandidateZone.centroid_lon,
+        metric_col.label("value"),
+    ).where(metric_col.isnot(None))
+
+    if district_id is not None:
+        query = query.where(CandidateZone.district_id == district_id)
+
+    rows = (await db.execute(query)).mappings().all()
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [row["centroid_lon"], row["centroid_lat"]],
+            },
+            "properties": {
+                "zone_id": row["zone_id"],
+                "district_id": row["district_id"],
+                "value": float(row["value"]),
+                "metric": metric,
             },
         }
         for row in rows
