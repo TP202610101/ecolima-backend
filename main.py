@@ -6,7 +6,11 @@ app = FastAPI(title="EcoLima Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",   # Vue.js dev server
+        "http://localhost:8000",   # Swagger UI (/docs)
+        "http://127.0.0.1:8000",   # Swagger UI via 127.0.0.1
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

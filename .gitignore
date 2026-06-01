@@ -160,6 +160,10 @@ venv.bak/
 # Uploads and local data
 uploads/
 
+# Modelos ML serializados (no subir al repo — van a Azure Blob en producción)
+models/*.pkl
+models/*.joblib
+
 # Spyder project settings
 .spyderproject
 .spyproject
