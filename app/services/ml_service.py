@@ -1,3 +1,4 @@
+import json
 import logging
 import pickle
 import uuid
@@ -63,6 +64,116 @@ _SECTION_C: frozenset[str] = frozenset({
 assert not (_SECTION_C & set(_TRAINING_COLS)), (
     "CRITICAL: columna de Sección C detectada en _TRAINING_COLS — data leakage"
 )
+
+
+# ── SHAP — mapas de etiquetas y unidades para el analista municipal ───────────
+
+FEATURE_LABELS: dict[str, str] = {
+    "population_density":        "densidad poblacional",
+    "income_stratum":            "estrato de ingreso del distrito",
+    "fuel_expenditure_sol":      "gasto promedio en combustible",
+    "edu_level_head":            "nivel educativo del hogar",
+    "household_size_avg":        "tamaño promedio del hogar",
+    "pct_nse_ab":                "% hogares NSE A/B",
+    "pct_nse_de":                "% hogares NSE D/E",
+    "gpc_kg_per_capita_day":     "generación de residuos per cápita",
+    "pct_recyclable":            "% de residuos reciclables",
+    "pct_plastic":               "% de plástico en residuos",
+    "informal_recyclers_count":  "recicladores formalizados en el distrito",
+    "road_density":              "densidad de la red vial",
+    "dist_to_main_road_m":       "distancia a la vía principal",
+    "dist_to_market_m":          "distancia al mercado más cercano",
+    "dist_to_nearest_point_m":   "distancia al punto de reciclaje más cercano",
+    "existing_points_500m":      "puntos de reciclaje existentes en 500m",
+    "has_park_300m":             "presencia de parque a menos de 300m",
+    "slope_pct":                 "pendiente del terreno",
+    "urbanized_area_pct":        "% de área urbanizada",
+    "recycling_potential_index": "índice de potencial reciclable",
+}
+
+FEATURE_UNITS: dict[str, str] = {
+    "population_density":        "hab/km²",
+    "fuel_expenditure_sol":      "S/./mes",
+    "gpc_kg_per_capita_day":     "kg/hab/día",
+    "dist_to_main_road_m":       "m",
+    "dist_to_market_m":          "m",
+    "dist_to_nearest_point_m":   "m",
+    "slope_pct":                 "%",
+    "urbanized_area_pct":        "%",
+    "pct_nse_ab":                "%",
+    "pct_nse_de":                "%",
+    "pct_recyclable":            "%",
+    "pct_plastic":               "%",
+    "recycling_potential_index": "",
+}
+
+_DIST_FEATURES = frozenset({"dist_to_nearest_point_m", "dist_to_main_road_m", "dist_to_market_m"})
+
+
+def _format_feature_value(feature: str, value: Any) -> str:
+    """Convierte un valor numérico de feature al formato legible para el analista."""
+    if value is None:
+        return "N/D"
+    unit = FEATURE_UNITS.get(feature, "")
+    if feature in _DIST_FEATURES:
+        v = float(value)
+        return f"{v / 1000:.1f} km" if v >= 1000 else f"{v:.0f} m"
+    if unit == "%":
+        return f"{float(value):.1f}%"
+    if feature == "population_density":
+        return f"{float(value):,.0f} hab/km²"
+    if feature == "gpc_kg_per_capita_day":
+        return f"{float(value):.2f} kg/hab/día"
+    if feature == "recycling_potential_index":
+        return f"índice {float(value):.0f}"
+    if feature == "has_park_300m":
+        return "sí" if int(value) else "no"
+    if feature == "income_stratum":
+        return f"estrato {int(value)}"
+    if isinstance(value, (int, float)):
+        return f"{float(value):.1f} {unit}".strip()
+    return str(value)
+
+
+def generate_explanation(
+    shap_values: np.ndarray,
+    feature_values: dict,
+    top_n: int = 3,
+) -> str:
+    """
+    Genera texto explicativo legible para el analista municipal a partir de
+    los SHAP values de una celda. Toma las top_n features por |shap_value|
+    y las convierte en una frase en español con etiquetas y unidades reales.
+
+    Ejemplo de output:
+        "Zona recomendada por: alta densidad poblacional (8,540 hab/km²),
+         baja distancia al punto de reciclaje más cercano (450 m) y
+         alto índice de potencial reciclable (índice 312)."
+    """
+    indexed = sorted(
+        enumerate(shap_values),
+        key=lambda x: abs(float(x[1])),
+        reverse=True,
+    )[:top_n]
+
+    parts: list[str] = []
+    for idx, shap_val in indexed:
+        feature = FEATURE_COLUMNS[idx]
+        label = FEATURE_LABELS.get(feature, feature)
+        val_str = _format_feature_value(feature, feature_values.get(feature))
+        direction = "alta" if float(shap_val) > 0 else "baja"
+        parts.append(f"{direction} {label} ({val_str})")
+
+    if not parts:
+        return "Sin explicación disponible."
+    if len(parts) == 1:
+        reasons_str = parts[0]
+    elif len(parts) == 2:
+        reasons_str = f"{parts[0]} y {parts[1]}"
+    else:
+        reasons_str = f"{', '.join(parts[:-1])} y {parts[-1]}"
+
+    return f"Zona recomendada por: {reasons_str}."
 
 
 # ── Funciones de servicio ─────────────────────────────────────────────────────
@@ -380,7 +491,7 @@ async def run_inference(
         if isinstance(shap_vals, list):
             shap_vals = shap_vals[1]  # clase positiva
         reasons = [
-            _generate_basic_reason(shap_vals[i], FEATURE_COLUMNS, X.iloc[i].to_dict())
+            generate_explanation(shap_vals[i], X.iloc[i].to_dict())
             for i in range(n)
         ]
     except Exception as exc:
@@ -441,3 +552,73 @@ def get_inference_status(task_id: str) -> dict:
             detail={"code": "TASK_NOT_FOUND", "message": f"No existe tarea con id '{task_id}'."},
         )
     return _inference_tasks[task_id]
+
+
+# ── Recomendaciones GeoJSON ───────────────────────────────────────────────────
+
+async def get_recommendations_geojson(
+    db: AsyncSession,
+    priority: str | None = None,
+    district_id: int | None = None,
+    limit: int = 50,
+    include_ml_score: bool = False,
+) -> dict:
+    """
+    Devuelve candidate_zones recomendadas (is_recommended=true) como GeoJSON.
+    ml_score se incluye solo cuando include_ml_score=True (rol admin).
+    Ordenadas por ml_score DESC para priorizar las mejores zonas primero.
+    """
+    # Construir WHERE dinámicamente para evitar AmbiguousParameterError en asyncpg:
+    # asyncpg no puede inferir el tipo de un parámetro $N cuando su valor es None.
+    conditions = ["cz.is_recommended = TRUE"]
+    params: dict = {"limit": limit}
+    if priority is not None:
+        conditions.append("cz.priority_label = :priority")
+        params["priority"] = priority
+    if district_id is not None:
+        conditions.append("cz.district_id = :district_id")
+        params["district_id"] = district_id
+
+    stmt = text(f"""
+        SELECT
+            cz.zone_id,
+            cz.centroid_lat,
+            cz.centroid_lon,
+            cz.priority_label,
+            cz.recommendation_reason,
+            cz.coverage_gap_m,
+            cz.ml_score,
+            cz.model_version,
+            cz.inference_date,
+            d.district_name,
+            ST_AsGeoJSON(cz.geometry) AS geometry_json
+        FROM candidate_zones cz
+        JOIN districts d ON d.district_id = cz.district_id
+        WHERE {' AND '.join(conditions)}
+        ORDER BY cz.ml_score DESC NULLS LAST
+        LIMIT :limit
+    """)
+
+    rows = (await db.execute(stmt, params)).mappings().all()
+
+    features = []
+    for row in rows:
+        geom = json.loads(row["geometry_json"]) if row["geometry_json"] else None
+        props: dict = {
+            "zone_id":                row["zone_id"],
+            "priority_label":         row["priority_label"],
+            "recommendation_reason":  row["recommendation_reason"],
+            "coverage_gap_m":         row["coverage_gap_m"],
+            "centroid_lat":           row["centroid_lat"],
+            "centroid_lon":           row["centroid_lon"],
+            "district_name":          row["district_name"],
+            "model_version":          row["model_version"],
+            "inference_date": (
+                row["inference_date"].isoformat() if row["inference_date"] else None
+            ),
+        }
+        if include_ml_score:
+            props["ml_score"] = row["ml_score"]
+        features.append({"type": "Feature", "geometry": geom, "properties": props})
+
+    return {"type": "FeatureCollection", "features": features}

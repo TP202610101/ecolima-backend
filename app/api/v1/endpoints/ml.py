@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from app.services.ml_service import (
     _run_inference_bg,
     generate_synthetic_training_data,
     get_inference_status,
+    get_recommendations_geojson,
     get_training_set_data,
     get_training_set_stats,
 )
@@ -142,11 +143,34 @@ async def inference_status(
     return get_inference_status(task_id)
 
 
-# ── Recomendaciones (completado en P-15) ──────────────────────────────────────
+# ── Recomendaciones ───────────────────────────────────────────────────────────
 
 @router.get("/recommendations")
 async def ml_recommendations(
-    _: User = Depends(get_current_user),
+    priority: str = "all",
+    district_id: int | None = None,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
 ):
-    """Placeholder — implementado en P-15."""
-    return {"message": "ml recommendations — pendiente implementación en P-15"}
+    """
+    Auth (todos) — GeoJSON FeatureCollection de zonas recomendadas (is_recommended=true).
+    Filtros: priority=Alta|Media|Baja|all, district_id, limit (max 500).
+    ml_score solo visible para rol admin — analista y ciudadano no lo reciben.
+    Ordenado por ml_score DESC.
+    """
+    valid_priorities = {"Alta", "Media", "Baja", "all"}
+    if priority not in valid_priorities:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"priority debe ser uno de: {sorted(valid_priorities)}",
+        )
+
+    data = await get_recommendations_geojson(
+        db,
+        priority=priority if priority != "all" else None,
+        district_id=district_id,
+        limit=min(limit, 500),
+        include_ml_score=current_user.role == "admin",
+    )
+    return JSONResponse(content=data, media_type="application/geo+json")
