@@ -6,3 +6,4 @@ from app.models.recycling_point import RecyclingPoint
 from app.models.candidate_zone import CandidateZone
 from app.models.dataset import Dataset
 from app.models.audit_log import AuditLog
+from app.models.model_version import ModelVersion

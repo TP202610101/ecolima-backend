@@ -14,11 +14,15 @@ from app.services.ml_service import (
     ModelNotAvailableError,
     _inference_tasks,
     _run_inference_bg,
+    activate_model,
     generate_synthetic_training_data,
+    get_all_models,
     get_inference_status,
+    get_model_metrics,
     get_recommendations_geojson,
     get_training_set_data,
     get_training_set_stats,
+    register_model,
 )
 
 router = APIRouter()
@@ -174,3 +178,65 @@ async def ml_recommendations(
         include_ml_score=current_user.role == "admin",
     )
     return JSONResponse(content=data, media_type="application/geo+json")
+
+
+# ── Versionado de modelos ─────────────────────────────────────────────────────
+# ORDEN CRÍTICO: /models/register ANTES de /models/{version}/...
+# para que el literal "register" no sea capturado como {version}.
+
+
+class RegisterModelRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    version_name: str
+    artifact_url: str | None = None
+    metrics: dict | None = None
+    features_used: list[str] | None = None
+
+
+@router.post("/models/register")
+async def register_model_endpoint(
+    payload: RegisterModelRequest,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    admin — registra una nueva versión de modelo.
+    Llamado por el script de entrenamiento de Nikole tras guardar el .pkl en Azure Blob.
+    """
+    return await register_model(
+        db,
+        version_name=payload.version_name,
+        artifact_url=payload.artifact_url,
+        metrics=payload.metrics,
+        features_used=payload.features_used,
+        trained_by=current_user.user_id,
+    )
+
+
+@router.get("/models/{version}/metrics")
+async def model_metrics(
+    version: str,
+    _: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    """admin — métricas detalladas + comparativa vs versión anterior (HU-40, HU-43)."""
+    return await get_model_metrics(db, version_name=version)
+
+
+@router.post("/models/{version}/activate")
+async def activate_model_endpoint(
+    version: str,
+    _: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    """admin — activa esta versión y desactiva las demás. Limpia el caché en memoria."""
+    return await activate_model(db, version_name=version)
+
+
+@router.get("/models")
+async def list_models(
+    _: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    """admin — lista todas las versiones registradas, más recientes primero (HU-42)."""
+    return await get_all_models(db)

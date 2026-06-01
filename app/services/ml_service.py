@@ -14,6 +14,7 @@ from sqlalchemy.sql.expression import bindparam
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.candidate_zone import CandidateZone
+from app.models.model_version import ModelVersion
 
 logger = logging.getLogger(__name__)
 
@@ -622,3 +623,165 @@ async def get_recommendations_geojson(
         features.append({"type": "Feature", "geometry": geom, "properties": props})
 
     return {"type": "FeatureCollection", "features": features}
+
+
+# ── Versionado de modelos ─────────────────────────────────────────────────────
+
+async def get_all_models(db: AsyncSession) -> list[dict]:
+    """Lista todas las versiones de modelo registradas, más recientes primero."""
+    rows = (
+        await db.execute(
+            select(ModelVersion).order_by(ModelVersion.created_at.desc())
+        )
+    ).scalars().all()
+
+    return [
+        {
+            "version_name":  r.version_name,
+            "training_date": r.training_date.isoformat() if r.training_date else None,
+            "is_active":     r.is_active,
+            "artifact_url":  r.artifact_url,
+            "metrics":       json.loads(r.metrics) if r.metrics else None,
+            "created_at":    r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+async def get_model_metrics(db: AsyncSession, version_name: str) -> dict:
+    """
+    Métricas detalladas de una versión + comparativa con la versión anterior.
+    La comparativa muestra el delta de cada métrica (positivo = mejora).
+    """
+    row = (
+        await db.execute(
+            select(ModelVersion).where(ModelVersion.version_name == version_name)
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "MODEL_NOT_FOUND", "message": f"Versión '{version_name}' no encontrada."},
+        )
+
+    metrics = json.loads(row.metrics) if row.metrics else {}
+    features = json.loads(row.features_used) if row.features_used else FEATURE_COLUMNS
+
+    # Versión anterior (la más reciente antes de esta)
+    prev_row = (
+        await db.execute(
+            select(ModelVersion)
+            .where(ModelVersion.created_at < row.created_at)
+            .order_by(ModelVersion.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    comparison = None
+    if prev_row:
+        prev_metrics = json.loads(prev_row.metrics) if prev_row.metrics else {}
+        comparison = {
+            "version_name": prev_row.version_name,
+            "metrics":      prev_metrics,
+            "delta": {
+                k: round(float(metrics.get(k, 0)) - float(prev_metrics.get(k, 0)), 4)
+                for k in metrics
+                if k in prev_metrics
+            },
+        }
+
+    return {
+        "version_name":             row.version_name,
+        "training_date":            row.training_date.isoformat() if row.training_date else None,
+        "is_active":                row.is_active,
+        "artifact_url":             row.artifact_url,
+        "metrics":                  metrics,
+        "features_used":            features,
+        "created_at":               row.created_at.isoformat() if row.created_at else None,
+        "comparison_with_previous": comparison,
+    }
+
+
+async def activate_model(db: AsyncSession, version_name: str) -> dict:
+    """
+    Activa la versión indicada y desactiva todas las demás.
+    Limpia el caché en memoria para que la próxima inferencia use el modelo activado.
+    """
+    row = (
+        await db.execute(
+            select(ModelVersion).where(ModelVersion.version_name == version_name)
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "MODEL_NOT_FOUND", "message": f"Versión '{version_name}' no encontrada."},
+        )
+
+    # Desactivar todo → activar solo la versión solicitada
+    await db.execute(update(ModelVersion).values(is_active=False))
+    await db.execute(
+        update(ModelVersion)
+        .where(ModelVersion.version_name == version_name)
+        .values(is_active=True)
+    )
+    await db.commit()
+
+    # Limpiar caché para forzar recarga del modelo activado
+    _model_cache.clear()
+    logger.info("Modelo activado: %s. Caché limpiado.", version_name)
+
+    return {
+        "version_name": version_name,
+        "is_active":    True,
+        "message":      f"Versión '{version_name}' activada. La próxima inferencia usará este modelo.",
+    }
+
+
+async def register_model(
+    db: AsyncSession,
+    version_name: str,
+    artifact_url: str | None,
+    metrics: dict | None,
+    features_used: list[str] | None,
+    trained_by: int | None,
+) -> dict:
+    """
+    Registra una nueva versión de modelo.
+    Llamado por el script de entrenamiento de Nikole tras guardar el .pkl en Azure Blob.
+    """
+    existing = (
+        await db.execute(
+            select(ModelVersion).where(ModelVersion.version_name == version_name)
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "VERSION_EXISTS", "message": f"La versión '{version_name}' ya existe."},
+        )
+
+    new_ver = ModelVersion(
+        version_name=version_name,
+        training_date=datetime.utcnow(),
+        trained_by=trained_by,
+        artifact_url=artifact_url,
+        metrics=json.dumps(metrics or {}),
+        features_used=json.dumps(features_used or FEATURE_COLUMNS),
+        is_active=False,
+    )
+    db.add(new_ver)
+    await db.commit()
+    await db.refresh(new_ver)
+
+    return {
+        "version_name":  new_ver.version_name,
+        "training_date": new_ver.training_date.isoformat() if new_ver.training_date else None,
+        "is_active":     new_ver.is_active,
+        "artifact_url":  new_ver.artifact_url,
+        "metrics":       json.loads(new_ver.metrics) if new_ver.metrics else {},
+        "created_at":    new_ver.created_at.isoformat() if new_ver.created_at else None,
+    }

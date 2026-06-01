@@ -18,10 +18,29 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL:
     config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
+# Tablas gestionadas por esta app — autogenerate solo toca estas
+_OUR_TABLES = {
+    "users", "districts", "socioeconomic_indicators", "waste_generation",
+    "recycling_points", "candidate_zones", "datasets", "audit_log",
+    "model_versions",
+}
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """Excluye tablas de PostGIS/Tiger/extensiones que no gestionamos."""
+    if type_ == "table":
+        return name in _OUR_TABLES
+    return True
+
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
-    context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
@@ -34,7 +53,11 @@ def run_migrations_online() -> None:
     )
 
     def do_run_migrations(connection):
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            include_object=include_object,
+        )
         with context.begin_transaction():
             context.run_migrations()
 
