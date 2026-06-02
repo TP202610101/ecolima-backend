@@ -1,7 +1,6 @@
 import json
 import logging
 import pickle
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,8 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException, status
-from sqlalchemy import and_, func, select, text, update
-from sqlalchemy.sql.expression import bindparam
+from sqlalchemy import and_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.candidate_zone import CandidateZone
@@ -377,22 +375,6 @@ def get_priority_label(score: float, high: float = 0.7, medium: float = 0.4) -> 
     return "Baja"
 
 
-def _generate_basic_reason(
-    shap_row: np.ndarray,
-    feature_names: list[str],
-    feature_values: dict,  # reservado para P-15 (labels + unidades)
-) -> str:
-    """
-    Genera texto explicativo básico a partir de los SHAP values de una celda.
-    P-15 reemplaza esto con la versión completa usando FEATURE_LABELS y unidades.
-    """
-    top_idx = sorted(range(len(shap_row)), key=lambda i: abs(float(shap_row[i])), reverse=True)[:3]
-    parts = []
-    for i in top_idx:
-        direction = "alta" if float(shap_row[i]) > 0 else "baja"
-        parts.append(f"{direction} {feature_names[i]}")
-    return ("Zona recomendada por: " + ", ".join(parts) + ".") if parts else "Sin explicación disponible."
-
 
 async def _get_inference_zones(db: AsyncSession) -> tuple[list[int], pd.DataFrame]:
     """Devuelve zonas donde TODAS las features de Sección B son NOT NULL."""
@@ -410,25 +392,27 @@ async def _get_inference_zones(db: AsyncSession) -> tuple[list[int], pd.DataFram
     return zone_ids, df
 
 
-_UPDATE_SECTION_C = (
-    update(CandidateZone)
-    .where(CandidateZone.zone_id == bindparam("b_zone_id"))
-    .values(
-        ml_score=bindparam("b_ml_score"),
-        is_recommended=bindparam("b_is_recommended"),
-        priority_label=bindparam("b_priority_label"),
-        recommendation_reason=bindparam("b_recommendation_reason"),
-        model_version=bindparam("b_model_version"),
-        inference_date=bindparam("b_inference_date"),
-    )
-)
+_UPDATE_SECTION_C_SQL = text("""
+    UPDATE candidate_zones
+    SET
+        ml_score              = :b_ml_score,
+        is_recommended        = :b_is_recommended,
+        priority_label        = :b_priority_label,
+        recommendation_reason = :b_recommendation_reason,
+        model_version         = :b_model_version,
+        inference_date        = :b_inference_date
+    WHERE zone_id = :b_zone_id
+""")
 
 
 async def _bulk_update_section_c(db: AsyncSession, params: list[dict]) -> None:
-    """Actualiza Sección C en lotes de 500 filas usando executemany."""
-    _BATCH = 500
-    for i in range(0, len(params), _BATCH):
-        await db.execute(_UPDATE_SECTION_C, params[i : i + _BATCH])
+    """
+    Actualiza Sección C fila a fila usando text() — bypasea el ORM session
+    bulk machinery que requiere PK explícita en el dict. Para las ~11,000 zonas
+    del grid completo el tiempo total sigue siendo aceptable en BackgroundTask.
+    """
+    for p in params:
+        await db.execute(_UPDATE_SECTION_C_SQL, p)
     await db.commit()
 
 
@@ -470,7 +454,12 @@ async def run_inference(
     X["has_park_300m"] = X["has_park_300m"].astype(int)
 
     # 4. Inferencia
-    scores: np.ndarray = model.predict_proba(X.values)[:, 1]
+    # lgb.Booster (API nativa)  → .predict()       retorna probs directamente
+    # LGBMClassifier (sklearn)  → .predict_proba() retorna array (n, 2)
+    if hasattr(model, "predict_proba"):
+        scores: np.ndarray = model.predict_proba(X.values)[:, 1]
+    else:
+        scores = model.predict(X.values)
     _update_task(55, n)
 
     # Leer umbrales desde settings si están disponibles
@@ -500,9 +489,22 @@ async def run_inference(
         reasons = ["Sin explicación disponible."] * n
     _update_task(80, n)
 
-    # 6. Actualizar Sección C
+    # 6. Resolver version_name desde model_versions (is_active=TRUE) o fallback
+    active_row = (
+        await db.execute(
+            select(ModelVersion.version_name).where(ModelVersion.is_active.is_(True))
+        )
+    ).scalar_one_or_none()
+
+    if active_row:
+        mv_str = active_row
+    elif model_version != "latest":
+        mv_str = model_version
+    else:
+        mv_str = "v-unknown"
+
+    # 7. Actualizar Sección C
     now = datetime.utcnow()
-    mv_str = model_version if model_version != "latest" else "v-unknown"
     params = [
         {
             "b_zone_id":               int(zone_ids[i]),
