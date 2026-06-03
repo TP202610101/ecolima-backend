@@ -484,3 +484,54 @@ async def calculate_existing_points_500m(db: AsyncSession) -> dict:
     )
     await db.commit()
     return {"updated_zones": result.rowcount if result.rowcount >= 0 else 0}
+
+
+async def get_saturation_data(db: AsyncSession) -> list[dict]:
+    """
+    Calcula el porcentaje de saturación por distrito.
+    already_covered = zonas is_recommended=TRUE con existing_points_500m > 0
+    (indica que ya hay al menos un punto real en 500m, independiente de is_suitable)
+    saturation_pct = already_covered / total_recommended × 100
+    Semáforo: verde 0-50%, amarillo 51-80%, rojo >80%
+    """
+    rows = (await db.execute(text("""
+        SELECT
+            d.district_id,
+            d.district_name,
+            COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE)
+                AS total_recommended,
+            COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE AND cz.existing_points_500m > 0)
+                AS already_covered,
+            CASE
+                WHEN COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE) = 0 THEN 0.0
+                ELSE ROUND(
+                    100.0
+                    * COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE AND cz.existing_points_500m > 0)
+                    / COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE),
+                    2
+                )
+            END AS saturation_pct
+        FROM districts d
+        LEFT JOIN candidate_zones cz ON cz.district_id = d.district_id
+        GROUP BY d.district_id, d.district_name
+        ORDER BY saturation_pct DESC NULLS LAST, d.district_name
+    """))).fetchall()
+
+    result = []
+    for row in rows:
+        pct = float(row[4])
+        if pct <= 50:
+            traffic_light = "verde"
+        elif pct <= 80:
+            traffic_light = "amarillo"
+        else:
+            traffic_light = "rojo"
+        result.append({
+            "district_id": row[0],
+            "district_name": row[1],
+            "total_recommended": int(row[2]),
+            "already_covered": int(row[3]),
+            "saturation_pct": pct,
+            "status": traffic_light,
+        })
+    return result

@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, require_role
+from app.core.limiter import limiter
 from app.db.session import get_session
 from app.models.user import User
 from app.services.geo_service import (
@@ -14,6 +15,7 @@ from app.services.geo_service import (
     get_nearby_points_geojson,
     get_point_by_id_geojson,
     get_points_geojson,
+    get_saturation_data,
 )
 
 router = APIRouter()
@@ -23,13 +25,15 @@ _GEO = "application/geo+json"
 # ── /points/* — literal paths first, then parametrized ────────────────────────
 
 @router.get("/points/nearby")
+@limiter.limit("100/minute")
 async def map_points_nearby(
+    request: Request,
     lat: float,
     lon: float,
     radius_m: int = 1000,
     db: AsyncSession = Depends(get_session),
 ):
-    """Público — sin autenticación (HU-29)."""
+    """Público — sin autenticación (HU-29). Limitado a 100 req/min."""
     if radius_m > 5000:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -129,3 +133,13 @@ async def map_heatmap(
     """admin, analista — heatmap zonas críticas (HU-27). metric: density|priority|gap"""
     data = await get_heatmap_geojson(db, district_id=district_id, metric=metric)
     return JSONResponse(content=data, media_type=_GEO)
+
+
+@router.get("/saturation")
+async def map_saturation(
+    _: User = Depends(require_role("admin", "analista")),
+    db: AsyncSession = Depends(get_session),
+):
+    """admin, analista — semáforo de saturación por distrito (HU-45).
+    status: verde 0-50%, amarillo 51-80%, rojo >80%."""
+    return await get_saturation_data(db)

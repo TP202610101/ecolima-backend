@@ -22,7 +22,7 @@ if DATABASE_URL:
 _OUR_TABLES = {
     "users", "districts", "socioeconomic_indicators", "waste_generation",
     "recycling_points", "candidate_zones", "datasets", "audit_log",
-    "model_versions",
+    "model_versions", "alerts",
 }
 
 

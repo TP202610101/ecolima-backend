@@ -2,12 +2,13 @@ import io
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, require_role
+from app.core.limiter import limiter
 from app.db.session import get_session
 from app.models.user import User
 from app.services.ml_service import (
@@ -86,7 +87,9 @@ class RunInferenceRequest(BaseModel):
 
 
 @router.post("/run-inference")
+@limiter.limit("20/minute")
 async def run_inference_endpoint(
+    request: Request,
     payload: RunInferenceRequest,
     background_tasks: BackgroundTasks,
     _: User = Depends(require_role("admin")),
@@ -150,7 +153,9 @@ async def inference_status(
 # ── Recomendaciones ───────────────────────────────────────────────────────────
 
 @router.get("/recommendations")
+@limiter.limit("20/minute")
 async def ml_recommendations(
+    request: Request,
     priority: str = "all",
     district_id: int | None = None,
     limit: int = 50,
