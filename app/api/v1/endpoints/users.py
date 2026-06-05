@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.dependencies import get_current_user, require_role
-from app.core.security import get_password_hash
+
+from app.core.dependencies import require_role
 from app.db.session import get_session
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserRoleUpdate
+from app.services import user_service
 
 router = APIRouter()
 ALLOWED_ROLES = {"admin", "analista", "ciudadano"}
@@ -16,8 +16,7 @@ async def list_users(
     current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    result = await db.execute(select(User))
-    return result.scalars().all()
+    return await user_service.list_users(db)
 
 
 @router.post("/", response_model=UserResponse)
@@ -29,19 +28,16 @@ async def create_user(
     if user_in.role not in ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rol inválido")
 
-    existing_user = await User.get_by_email(db, user_in.email)
-    if existing_user:
+    if await User.get_by_email(db, user_in.email):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El email ya existe")
 
-    user = await User.create(
+    return await user_service.create_user(
         db,
         email=user_in.email,
-        hashed_password=get_password_hash(user_in.password),
+        password=user_in.password,
         full_name=user_in.full_name,
         role=user_in.role,
-        is_active=True,
     )
-    return user
 
 
 @router.patch("/{user_id}/role", response_model=UserResponse)
@@ -54,11 +50,7 @@ async def update_user_role(
     if payload.role not in ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rol inválido")
 
-    user = await User.get_by_id(db, user_id)
+    user = await user_service.update_user_role(db, user_id, payload.role)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-
-    user.role = payload.role
-    await db.commit()
-    await db.refresh(user)
     return user

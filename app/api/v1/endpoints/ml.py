@@ -16,6 +16,7 @@ from app.services.ml_service import (
     _inference_tasks,
     _run_inference_bg,
     activate_model,
+    count_inferable_zones,
     generate_synthetic_training_data,
     get_all_models,
     get_inference_status,
@@ -113,14 +114,7 @@ async def run_inference_endpoint(
             },
         )
 
-    # Contar zonas inferibles para la estimación
-    from sqlalchemy import and_, func, select
-    from app.models.candidate_zone import CandidateZone
-    from app.services.ml_service import FEATURE_COLUMNS
-    not_null = [getattr(CandidateZone, col).isnot(None) for col in FEATURE_COLUMNS]
-    estimated: int = (
-        await db.execute(select(func.count()).select_from(CandidateZone).where(and_(*not_null)))
-    ).scalar() or 0
+    estimated: int = await count_inferable_zones(db)
 
     task_id = str(uuid.uuid4())
     _inference_tasks[task_id] = {

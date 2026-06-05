@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException, status
-from sqlalchemy import and_, select, text, update
+from sqlalchemy import and_, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.candidate_zone import CandidateZone
@@ -787,3 +787,11 @@ async def register_model(
         "metrics":       json.loads(new_ver.metrics) if new_ver.metrics else {},
         "created_at":    new_ver.created_at.isoformat() if new_ver.created_at else None,
     }
+
+
+async def count_inferable_zones(db: AsyncSession) -> int:
+    not_null = [getattr(CandidateZone, col).isnot(None) for col in FEATURE_COLUMNS]
+    result = await db.execute(
+        select(func.count()).select_from(CandidateZone).where(and_(*not_null))
+    )
+    return result.scalar() or 0
