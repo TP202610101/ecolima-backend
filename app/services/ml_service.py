@@ -593,6 +593,7 @@ async def get_recommendations_geojson(
             cz.ml_score,
             cz.model_version,
             cz.inference_date,
+            cz.income_stratum,
             d.district_name,
             ST_AsGeoJSON(cz.geometry) AS geometry_json
         FROM candidate_zones cz
@@ -615,6 +616,7 @@ async def get_recommendations_geojson(
             "centroid_lat":           row["centroid_lat"],
             "centroid_lon":           row["centroid_lon"],
             "district_name":          row["district_name"],
+            "income_stratum":         row["income_stratum"],
             "model_version":          row["model_version"],
             "inference_date": (
                 row["inference_date"].isoformat() if row["inference_date"] else None
