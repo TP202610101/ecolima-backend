@@ -29,9 +29,8 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",   # Vue.js dev server
-        "http://localhost:8000",   # Swagger UI (/docs)
-        "http://127.0.0.1:8000",   # Swagger UI via 127.0.0.1
+        "http://localhost:5173",
+        "https://mango-diff-03aa6110f7.azurestaticapps.net",
     ],
     allow_credentials=True,
     allow_methods=["*"],
