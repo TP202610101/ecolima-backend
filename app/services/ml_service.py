@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import pickle
@@ -406,13 +407,7 @@ _UPDATE_SECTION_C_SQL = text("""
 
 
 async def _bulk_update_section_c(db: AsyncSession, params: list[dict]) -> None:
-    """
-    Actualiza Sección C fila a fila usando text() — bypasea el ORM session
-    bulk machinery que requiere PK explícita en el dict. Para las ~11,000 zonas
-    del grid completo el tiempo total sigue siendo aceptable en BackgroundTask.
-    """
-    for p in params:
-        await db.execute(_UPDATE_SECTION_C_SQL, p)
+    await db.execute(_UPDATE_SECTION_C_SQL, params)
     await db.commit()
 
 
@@ -438,7 +433,7 @@ async def run_inference(
 
     # 1. Cargar modelo
     _update_task(5)
-    model = load_model(model_version)
+    model = await asyncio.to_thread(load_model, model_version)
     _update_task(15)
 
     # 2. Obtener zonas inferibles

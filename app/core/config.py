@@ -1,8 +1,16 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str
     secret_key: str
+
+    @field_validator("secret_key")
+    @classmethod
+    def secret_key_min_length(cls, v: str) -> str:
+        if len(v) < 32:
+            raise ValueError("SECRET_KEY debe tener al menos 32 caracteres")
+        return v
     access_token_expire_minutes: int = 30
     azure_blob_connection_string: str
     azure_blob_container_models: str

@@ -73,4 +73,3 @@ jobs:
         with:
           app-name: 'Test-Deploy-Backend'
           slot-name: 'Production'
-          
