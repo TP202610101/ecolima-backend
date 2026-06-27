@@ -30,7 +30,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "https://mango-diff-03aa6110f7.azurestaticapps.net",
+        "https://mango-cliff-03aa6110f.7.azurestaticapps.net",
     ],
     allow_credentials=True,
     allow_methods=["*"],
