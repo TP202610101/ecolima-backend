@@ -617,7 +617,7 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
         db.add(point)
         inserted += 1
 
-    dataset.status = "committed"
+    dataset.status = "committed" if inserted > 0 else "failed"
     _create_audit_log_entry(
         db,
         user_id,

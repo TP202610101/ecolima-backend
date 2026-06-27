@@ -28,7 +28,7 @@ async def alerts_check_saturation(
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — verifica saturación y registra alertas si algún distrito supera 80% (HU-44).
+    """admin — verifica saturación y registra alertas si algún distrito supera 80%.
     Llama automáticamente tras run-inference. Envía email si SMTP configurado."""
     smtp = _smtp_settings()
     admin_email = _settings.admin_email if smtp else None
@@ -44,5 +44,5 @@ async def alerts_get_active(
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — alertas activas para el banner rojo del dashboard (HU-44)."""
+    """admin, analista — alertas activas para el banner del dashboard."""
     return await get_active_alerts(db)

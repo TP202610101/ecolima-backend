@@ -515,11 +515,11 @@ async def get_saturation_data(db: AsyncSession) -> list[dict]:
         LEFT JOIN candidate_zones cz ON cz.district_id = d.district_id
         GROUP BY d.district_id, d.district_name
         ORDER BY saturation_pct DESC NULLS LAST, d.district_name
-    """))).fetchall()
+    """))).mappings().fetchall()
 
     result = []
     for row in rows:
-        pct = float(row[4])
+        pct = float(row["saturation_pct"])
         if pct <= 50:
             traffic_light = "verde"
         elif pct <= 80:
@@ -527,10 +527,10 @@ async def get_saturation_data(db: AsyncSession) -> list[dict]:
         else:
             traffic_light = "rojo"
         result.append({
-            "district_id": row[0],
-            "district_name": row[1],
-            "total_recommended": int(row[2]),
-            "already_covered": int(row[3]),
+            "district_id": row["district_id"],
+            "district_name": row["district_name"],
+            "total_recommended": int(row["total_recommended"]),
+            "already_covered": int(row["already_covered"]),
             "saturation_pct": pct,
             "status": traffic_light,
         })
