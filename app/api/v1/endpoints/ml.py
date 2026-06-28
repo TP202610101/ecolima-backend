@@ -1,3 +1,4 @@
+import asyncio
 import io
 import uuid
 from datetime import datetime
@@ -101,10 +102,9 @@ async def run_inference_endpoint(
     Retorna inmediatamente con task_id. Consultar estado en GET /inference-status/{task_id}.
     Requiere que exista un modelo cargable (Azure Blob o models/lightgbm_model.pkl).
     """
-    # Verificar que hay un modelo disponible antes de encolar la tarea
     from app.services.ml_service import load_model
     try:
-        load_model(payload.model_version)
+        await asyncio.to_thread(load_model, payload.model_version)
     except ModelNotAvailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -218,7 +218,7 @@ async def model_metrics(
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — métricas detalladas + comparativa vs versión anterior (HU-40, HU-43)."""
+    """admin — métricas detalladas + comparativa vs versión anterior."""
     return await get_model_metrics(db, version_name=version)
 
 
@@ -237,5 +237,5 @@ async def list_models(
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — lista todas las versiones registradas, más recientes primero (HU-42)."""
+    """admin — lista todas las versiones registradas, más recientes primero."""
     return await get_all_models(db)

@@ -33,7 +33,7 @@ async def map_points_nearby(
     radius_m: int = 1000,
     db: AsyncSession = Depends(get_session),
 ):
-    """Público — sin autenticación (HU-29). Limitado a 100 req/min."""
+    """Público — sin autenticación. Limitado a 100 req/min."""
     if radius_m > 5000:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -52,7 +52,7 @@ async def map_points_filter(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """Auth (todos) — filtros combinables (HU-22, HU-23)."""
+    """Auth (todos) — filtros combinables."""
     data = await get_filtered_points_geojson(
         db,
         district_id=district_id,
@@ -69,7 +69,7 @@ async def map_point_by_id(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """Auth (todos) — popup Leaflet (HU-21)."""
+    """Auth (todos) — popup de punto en el mapa."""
     data = await get_point_by_id_geojson(db, point_id=point_id)
     return JSONResponse(content=data, media_type=_GEO)
 
@@ -82,7 +82,7 @@ async def map_points(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """Auth (todos) — listado general (HU-20)."""
+    """Auth (todos) — listado general de puntos de reciclaje."""
     data = await get_points_geojson(
         db, district_id=district_id, material=material, verified_only=verified_only
     )
@@ -97,7 +97,7 @@ async def map_district_stats(
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — estadísticas por distrito (HU-19)."""
+    """admin, analista — estadísticas de cobertura por distrito."""
     return await get_district_stats(db, district_id=district_id)
 
 
@@ -106,7 +106,7 @@ async def map_districts(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """Auth (todos) — mapa base 43 distritos (HU-19)."""
+    """Auth (todos) — mapa base de los 43 distritos."""
     data = await get_districts_geojson(db)
     return JSONResponse(content=data, media_type=_GEO)
 
@@ -118,7 +118,7 @@ async def map_comparison(
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — split-view actual vs recomendado (HU-25)."""
+    """admin, analista — split-view actual vs recomendado."""
     data = await get_comparison_geojson(db)
     return JSONResponse(content=data, media_type=_GEO)
 
@@ -130,7 +130,7 @@ async def map_heatmap(
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — heatmap zonas críticas (HU-27). metric: density|priority|gap"""
+    """admin, analista — heatmap zonas críticas. metric: density|priority|gap"""
     data = await get_heatmap_geojson(db, district_id=district_id, metric=metric)
     return JSONResponse(content=data, media_type=_GEO)
 
@@ -140,6 +140,6 @@ async def map_saturation(
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — semáforo de saturación por distrito (HU-45).
+    """admin, analista — semáforo de saturación por distrito.
     status: verde 0-50%, amarillo 51-80%, rojo >80%."""
     return await get_saturation_data(db)
