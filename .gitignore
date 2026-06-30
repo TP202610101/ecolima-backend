@@ -161,8 +161,10 @@ venv.bak/
 uploads/
 
 # Modelos ML serializados (no subir al repo — van a Azure Blob en producción)
-models/*.pkl
+# Excepción: fallback local para demo/tesis
 models/*.joblib
+models/*.pkl
+!models/lightgbm_model.pkl
 
 # Spyder project settings
 .spyderproject
