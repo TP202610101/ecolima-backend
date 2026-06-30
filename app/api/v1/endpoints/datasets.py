@@ -116,7 +116,7 @@ async def edit_dataset_cells_endpoint(
     return await edit_dataset_cells(db=db, dataset_id=dataset_id, edits=[edit.model_dump() for edit in payload.edits], user_id=user.user_id)
 
 
-@router.get("/", response_model=list[DatasetListItem])
+@router.get("", response_model=list[DatasetListItem])
 async def list_datasets(
     skip: int = 0,
     limit: int = 20,

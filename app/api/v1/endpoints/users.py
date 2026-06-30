@@ -11,7 +11,7 @@ router = APIRouter()
 ALLOWED_ROLES = {"admin", "analista", "ciudadano"}
 
 
-@router.get("/", response_model=list[UserResponse])
+@router.get("", response_model=list[UserResponse])
 async def list_users(
     current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
@@ -19,7 +19,7 @@ async def list_users(
     return await user_service.list_users(db)
 
 
-@router.post("/", response_model=UserResponse)
+@router.post("", response_model=UserResponse)
 async def create_user(
     user_in: UserCreate,
     current_user: User = Depends(require_role("admin")),
