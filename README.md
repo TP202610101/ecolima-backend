@@ -11,3 +11,6 @@ FastAPI backend for EcoLima — recycling point optimization using GIS + LightGB
   ```
 - Base de datos de pruebas: Neon (PostgreSQL serverless) con PostGIS activado.
 - Variables de entorno requeridas en Azure: `DATABASE_URL`, `SECRET_KEY`, `AZURE_BLOB_CONNECTION_STRING`, `AZURE_BLOB_CONTAINER_MODELS`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `PYTHONPATH=/home/site/wwwroot`
+
+## Demo deployeada: 
+https://ecolima-backend-fbg6fzb4epd0eucr.canadacentral-01.azurewebsites.net/docs
