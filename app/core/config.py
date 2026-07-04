@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     ml_inference_threshold: float = 0.5
     ml_priority_high: float = 0.7
     ml_priority_medium: float = 0.4
+    # Integración con la API de ecolima-ml (servicio local, contrato v0.3)
+    ml_api_url: str = "http://localhost:8001"
+    ml_api_timeout_seconds: float = 15.0
 
     class Config:
         env_file = ".env"
