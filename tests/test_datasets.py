@@ -8,7 +8,7 @@ import io
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import auth_headers
+from tests.conftest import TEST_FILE_PREFIX, auth_headers
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,11 +45,24 @@ async def test_upload_unsupported_format(client: AsyncClient, admin_token: str):
     assert resp.status_code == 422
 
 
-async def test_upload_valid_csv(client: AsyncClient, admin_token: str):
-    """Upload de CSV válido retorna 200 con dataset_id y row_count."""
+async def test_upload_valid_csv(
+    client: AsyncClient, admin_token: str, cleanup_datasets: list[int]
+):
+    """Upload de CSV válido retorna 200 con dataset_id y row_count.
+
+    El archivo se nombra con TEST_FILE_PREFIX y el dataset creado se registra
+    en `cleanup_datasets` para que el fixture lo borre de Neon al terminar
+    (ver tests/conftest.py — crítico #1 del inventario de faltantes).
+    """
     resp = await client.post(
         "/api/v1/datasets/upload",
-        files={"file": ("puntos_test.csv", io.BytesIO(_VALID_CSV), "text/csv")},
+        files={
+            "file": (
+                f"{TEST_FILE_PREFIX}puntos.csv",
+                io.BytesIO(_VALID_CSV),
+                "text/csv",
+            )
+        },
         headers=auth_headers(admin_token),
     )
     assert resp.status_code == 200
@@ -57,6 +70,8 @@ async def test_upload_valid_csv(client: AsyncClient, admin_token: str):
     assert "dataset_id" in data
     assert data["row_count"] == 2
     assert data["status"] == "pending"
+
+    cleanup_datasets.append(data["dataset_id"])
 
 
 async def test_upload_requires_auth(client: AsyncClient):
