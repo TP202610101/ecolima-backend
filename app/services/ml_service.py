@@ -558,6 +558,7 @@ async def get_recommendations_geojson(
     db: AsyncSession,
     priority: str | None = None,
     district_id: int | None = None,
+    income_stratum: list[int] | None = None,
     limit: int = 50,
     include_ml_score: bool = False,
 ) -> dict:
@@ -565,6 +566,11 @@ async def get_recommendations_geojson(
     Devuelve candidate_zones recomendadas (is_recommended=true) como GeoJSON.
     ml_score se incluye solo cuando include_ml_score=True (rol admin).
     Ordenadas por ml_score DESC para priorizar las mejores zonas primero.
+
+    income_stratum filtra por estrato socioeconómico (1-5, multi-valor).
+    Semántica permisiva con NULL: una zona sin income_stratum siempre se
+    incluye, replicando el comportamiento del filtro client-side que este
+    parámetro reemplaza (no cambiar sin coordinar con frontend).
     """
     # Construir WHERE dinámicamente para evitar AmbiguousParameterError en asyncpg:
     # asyncpg no puede inferir el tipo de un parámetro $N cuando su valor es None.
@@ -576,6 +582,9 @@ async def get_recommendations_geojson(
     if district_id is not None:
         conditions.append("cz.district_id = :district_id")
         params["district_id"] = district_id
+    if income_stratum:
+        conditions.append("(cz.income_stratum = ANY(:income_stratum) OR cz.income_stratum IS NULL)")
+        params["income_stratum"] = income_stratum
 
     stmt = text(f"""
         SELECT

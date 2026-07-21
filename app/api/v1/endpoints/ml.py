@@ -3,7 +3,7 @@ import io
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -152,13 +152,17 @@ async def ml_recommendations(
     request: Request,
     priority: str = "all",
     district_id: int | None = None,
+    income_stratum: list[int] | None = Query(None),
     limit: int = 50,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
     """
     Auth (todos) — GeoJSON FeatureCollection de zonas recomendadas (is_recommended=true).
-    Filtros: priority=Alta|Media|Baja|all, district_id, limit (max 500).
+    Filtros: priority=Alta|Media|Baja|all, district_id, income_stratum
+    (multi-valor, 1-5; repetir el param: ?income_stratum=1&income_stratum=3;
+    sin enviarlo no se filtra por estrato; una zona sin estrato asignado
+    siempre se incluye), limit (max 500).
     ml_score solo visible para rol admin — analista y ciudadano no lo reciben.
     Ordenado por ml_score DESC.
     """
@@ -169,10 +173,18 @@ async def ml_recommendations(
             detail=f"priority debe ser uno de: {sorted(valid_priorities)}",
         )
 
+    valid_strata = {1, 2, 3, 4, 5}
+    if income_stratum is not None and not set(income_stratum) <= valid_strata:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"income_stratum debe ser uno o varios de: {sorted(valid_strata)}",
+        )
+
     data = await get_recommendations_geojson(
         db,
         priority=priority if priority != "all" else None,
         district_id=district_id,
+        income_stratum=income_stratum,
         limit=min(limit, 500),
         include_ml_score=current_user.role == "admin",
     )
