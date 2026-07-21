@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -39,10 +39,21 @@ async def alerts_check_saturation(
     }
 
 
-@router.get("/active")
-async def alerts_get_active(
+@router.get("")
+async def alerts_list(
+    alert_status: str = Query(default="active", alias="status"),
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — alertas activas para el banner del dashboard."""
+    """admin, analista — alertas para el banner del dashboard. Hoy solo se
+    soporta ?status=active (no hay listado histórico implementado)."""
+    if alert_status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "UNSUPPORTED_STATUS",
+                "message": "Solo se soporta status=active",
+                "allowed": ["active"],
+            },
+        )
     return await get_active_alerts(db)

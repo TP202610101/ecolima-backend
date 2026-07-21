@@ -62,6 +62,10 @@ class DatasetEditCellsResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DatasetStatusUpdateRequest(BaseModel):
+    status: str
+
+
 class DatasetCommitResponse(BaseModel):
     inserted: int
     skipped_duplicates: int

@@ -88,7 +88,7 @@ class RunInferenceRequest(BaseModel):
     threshold: float = 0.5
 
 
-@router.post("/run-inference")
+@router.post("/run-inference", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("20/minute")
 async def run_inference_endpoint(
     request: Request,
@@ -180,8 +180,6 @@ async def ml_recommendations(
 
 
 # ── Versionado de modelos ─────────────────────────────────────────────────────
-# ORDEN CRÍTICO: /models/register ANTES de /models/{version}/...
-# para que el literal "register" no sea capturado como {version}.
 
 
 class RegisterModelRequest(BaseModel):
@@ -192,7 +190,12 @@ class RegisterModelRequest(BaseModel):
     features_used: list[str] | None = None
 
 
-@router.post("/models/register")
+class ModelActivationRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    is_active: bool
+
+
+@router.post("/models", status_code=status.HTTP_201_CREATED)
 async def register_model_endpoint(
     payload: RegisterModelRequest,
     current_user: User = Depends(require_role("admin")),
@@ -222,13 +225,23 @@ async def model_metrics(
     return await get_model_metrics(db, version_name=version)
 
 
-@router.post("/models/{version}/activate")
-async def activate_model_endpoint(
+@router.patch("/models/{version}")
+async def update_model_endpoint(
     version: str,
+    payload: ModelActivationRequest,
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — activa esta versión y desactiva las demás. Limpia el caché en memoria."""
+    """admin — activa esta versión (is_active=true) y desactiva las demás. Limpia el caché en memoria."""
+    if not payload.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "UNSUPPORTED_TRANSITION",
+                "message": "Solo se soporta is_active=true",
+                "allowed": [True],
+            },
+        )
     return await activate_model(db, version_name=version)
 
 

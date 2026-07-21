@@ -6,6 +6,7 @@ from app.db.session import get_session
 from app.models.user import User
 
 bearer_scheme = HTTPBearer()
+_optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
@@ -30,6 +31,22 @@ async def get_current_user(
         raise
     except Exception:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servicio temporalmente no disponible")
+
+
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    db: AsyncSession = Depends(get_session),
+) -> User | None:
+    """Como get_current_user, pero devuelve None en vez de lanzar 401 si no
+    hay token o es inválido. Para endpoints de acceso mixto (público +
+    autenticado) como GET /map/points, donde el modo "cercanos" (?lat=&lon=)
+    es público y el resto requiere sesión."""
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        return None
 
 
 def require_role(*roles: str):
