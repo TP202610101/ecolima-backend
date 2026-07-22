@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.candidate_zone import CandidateZone
 from app.models.model_version import ModelVersion
+from app.services.dataset_service import log_action
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +377,81 @@ def get_priority_label(score: float, high: float = 0.7, medium: float = 0.4) -> 
     return "Baja"
 
 
+def _is_demo_version(version_name: str | None) -> bool:
+    """
+    True si la versión es de demostración (sembrada por un script de seed,
+    sin evaluación real detrás de sus métricas). Convención ya usada en el
+    repo para nombrar versiones de demo: 'v1.0-demo', 'v1-local-demo'.
+    """
+    return bool(version_name and "demo" in version_name.lower())
+
+
+def _extract_feature_names(model_artifact: Any) -> list[str] | None:
+    """
+    Extrae, del artefacto tal como lo carga load_model(), los nombres de
+    features en el orden que espera para predecir. Usado por el test de
+    contrato contra FEATURE_COLUMNS — si un artefacto no expone esta
+    información, retorna None en vez de asumir que coincide.
+    """
+    if isinstance(model_artifact, dict):
+        if model_artifact.get("feature_names"):
+            return list(model_artifact["feature_names"])
+        model_artifact = model_artifact.get("model")
+
+    if hasattr(model_artifact, "feature_name"):
+        return list(model_artifact.feature_name())
+    if hasattr(model_artifact, "booster_"):
+        return list(model_artifact.booster_.feature_name())
+    if hasattr(model_artifact, "feature_name_"):
+        return list(model_artifact.feature_name_)
+    return None
+
+
+def _prepare_features(
+    model_artifact: Any, df: pd.DataFrame
+) -> tuple[Any, pd.DataFrame, Any]:
+    """
+    Prepara la matriz de features según la forma del artefacto que cargó
+    load_model(). Punto único de acoplamiento con el formato del artefacto:
+    conectar el modelo real de ECOLIMA-ML debería implicar solo reemplazar
+    el archivo servido, no reescribir run_inference.
+
+    Formatos soportados:
+      - dict {"model", "preprocessor", "feature_engineer", ...} — formato que
+        produce joblib.dump() en ecolima-ml/src/ml/trainer.py. Se aplica
+        feature_engineer.transform() → preprocessor.transform() antes de
+        predecir. Rama NO ejercida contra un artefacto real todavía —
+        ecolima-ml no está conectado — es preparatoria.
+      - Booster/estimator pelado (formato de models/lightgbm_model.pkl hoy):
+        se usan las columnas de FEATURE_COLUMNS directamente, sin transformar.
+        Comportamiento idéntico al que había antes de esta función.
+
+    Retorna (estimator, X_readable, X_predict):
+      - estimator: objeto sobre el que se llama predict()/predict_proba().
+      - X_readable: DataFrame con los valores crudos de FEATURE_COLUMNS, en
+        el orden del training set — se usa para el texto de
+        recommendation_reason (SHAP), que debe mostrar valores legibles.
+      - X_predict: lo que se pasa a estimator.predict(). Para el Booster
+        pelado es X_readable.values (igual que antes); para el dict es el
+        resultado de la cadena feature_engineer → preprocessor.
+    """
+    X_readable = df[FEATURE_COLUMNS].copy()
+    X_readable["has_park_300m"] = X_readable["has_park_300m"].astype(int)
+
+    if isinstance(model_artifact, dict) and "model" in model_artifact:
+        estimator = model_artifact["model"]
+        X_predict: Any = X_readable
+        feature_engineer = model_artifact.get("feature_engineer")
+        if feature_engineer is not None:
+            X_predict = feature_engineer.transform(X_predict)
+        preprocessor = model_artifact.get("preprocessor")
+        if preprocessor is not None:
+            X_predict = preprocessor.transform(X_predict)
+        return estimator, X_readable, X_predict
+
+    # Booster/estimator pelado — comportamiento actual, sin cambios
+    return model_artifact, X_readable, X_readable.values
+
 
 async def _get_inference_zones(db: AsyncSession) -> tuple[list[int], pd.DataFrame]:
     """Devuelve zonas donde TODAS las features de Sección B son NOT NULL."""
@@ -416,6 +492,7 @@ async def run_inference(
     model_version: str = "latest",
     threshold: float = 0.5,
     task_id: str | None = None,
+    user_id: int | None = None,
 ) -> dict:
     """
     Pipeline completo de inferencia:
@@ -426,10 +503,21 @@ async def run_inference(
       5. UPDATE masivo de Sección C (ml_score, is_recommended, priority_label,
          recommendation_reason, model_version, inference_date).
     Retorna stats de la ejecución.
+
+    user_id, si se pasa, deja constancia en audit_log del inicio y fin de la
+    corrida (quién la disparó, qué modelo, cuántas zonas, cuánto tardó).
     """
     def _update_task(pct: int, zones: int = 0) -> None:
         if task_id and task_id in _inference_tasks:
             _inference_tasks[task_id].update({"progress_pct": pct, "zones_processed": zones})
+
+    started_at = datetime.utcnow()
+    if user_id is not None:
+        log_action(db, user_id, "run_inference_start", details={
+            "model_version": model_version,
+            "threshold": threshold,
+        })
+        await db.commit()
 
     # 1. Cargar modelo
     _update_task(5)
@@ -441,20 +529,26 @@ async def run_inference(
     n = len(zone_ids)
     if n == 0:
         logger.warning("run_inference: ninguna zona tiene todas las features completas.")
+        if user_id is not None:
+            log_action(db, user_id, "run_inference_end", details={
+                "model_version": model_version,
+                "zones_processed": 0,
+                "duration_seconds": round((datetime.utcnow() - started_at).total_seconds(), 3),
+            })
+            await db.commit()
         return {"zones_processed": 0, "high_priority": 0, "medium_priority": 0, "low_priority": 0}
     _update_task(25, n)
 
-    # 3. Preparar features en el orden exacto que espera LightGBM
-    X = df[FEATURE_COLUMNS].copy()
-    X["has_park_300m"] = X["has_park_300m"].astype(int)
+    # 3. Preparar features — la forma exacta depende del artefacto cargado
+    estimator, X_readable, X_predict = _prepare_features(model, df)
 
     # 4. Inferencia
     # lgb.Booster (API nativa)  → .predict()       retorna probs directamente
     # LGBMClassifier (sklearn)  → .predict_proba() retorna array (n, 2)
-    if hasattr(model, "predict_proba"):
-        scores: np.ndarray = model.predict_proba(X.values)[:, 1]
+    if hasattr(estimator, "predict_proba"):
+        scores: np.ndarray = estimator.predict_proba(X_predict)[:, 1]
     else:
-        scores = model.predict(X.values)
+        scores = estimator.predict(X_predict)
     _update_task(55, n)
 
     # Leer umbrales desde settings si están disponibles
@@ -471,12 +565,12 @@ async def run_inference(
     # 5. SHAP → recommendation_reason
     try:
         import shap  # lazy import — pesado, solo al correr inferencia
-        explainer = shap.TreeExplainer(model)
-        shap_vals = explainer.shap_values(X)
+        explainer = shap.TreeExplainer(estimator)
+        shap_vals = explainer.shap_values(X_readable)
         if isinstance(shap_vals, list):
             shap_vals = shap_vals[1]  # clase positiva
         reasons = [
-            generate_explanation(shap_vals[i], X.iloc[i].to_dict())
+            generate_explanation(shap_vals[i], X_readable.iloc[i].to_dict())
             for i in range(n)
         ]
     except Exception as exc:
@@ -515,20 +609,35 @@ async def run_inference(
     await _bulk_update_section_c(db, params)
     _update_task(100, n)
 
-    return {
+    result = {
         "zones_processed": n,
         "high_priority":   labels.count("Alta"),
         "medium_priority": labels.count("Media"),
         "low_priority":    labels.count("Baja"),
     }
 
+    if user_id is not None:
+        log_action(db, user_id, "run_inference_end", details={
+            "model_version": mv_str,
+            "duration_seconds": round((datetime.utcnow() - started_at).total_seconds(), 3),
+            **result,
+        })
+        await db.commit()
 
-async def _run_inference_bg(task_id: str, model_version: str, threshold: float) -> None:
+    return result
+
+
+async def _run_inference_bg(
+    task_id: str, model_version: str, threshold: float, user_id: int | None = None
+) -> None:
     """Background coroutine — crea su propia sesión BD independiente del request."""
     from app.db.session import AsyncSessionLocal
     try:
         async with AsyncSessionLocal() as db:
-            result = await run_inference(db, model_version=model_version, threshold=threshold, task_id=task_id)
+            result = await run_inference(
+                db, model_version=model_version, threshold=threshold,
+                task_id=task_id, user_id=user_id,
+            )
         _inference_tasks[task_id] = {"status": "done", "progress_pct": 100, **result}
     except ModelNotAvailableError as exc:
         _inference_tasks[task_id] = {
@@ -626,6 +735,7 @@ async def get_recommendations_geojson(
             "district_name":          row["district_name"],
             "income_stratum":         row["income_stratum"],
             "model_version":          row["model_version"],
+            "is_demo":                _is_demo_version(row["model_version"]),
             "inference_date": (
                 row["inference_date"].isoformat() if row["inference_date"] else None
             ),
@@ -712,10 +822,13 @@ async def get_model_metrics(db: AsyncSession, version_name: str) -> dict:
         "features_used":            features,
         "created_at":               row.created_at.isoformat() if row.created_at else None,
         "comparison_with_previous": comparison,
+        "is_demo":                  _is_demo_version(row.version_name),
     }
 
 
-async def activate_model(db: AsyncSession, version_name: str) -> dict:
+async def activate_model(
+    db: AsyncSession, version_name: str, user_id: int | None = None
+) -> dict:
     """
     Activa la versión indicada y desactiva todas las demás.
     Limpia el caché en memoria para que la próxima inferencia use el modelo activado.
@@ -739,6 +852,8 @@ async def activate_model(db: AsyncSession, version_name: str) -> dict:
         .where(ModelVersion.version_name == version_name)
         .values(is_active=True)
     )
+    if user_id is not None:
+        log_action(db, user_id, "activate_model", details={"version_name": version_name})
     await db.commit()
 
     # Limpiar caché para forzar recarga del modelo activado

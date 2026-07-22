@@ -94,7 +94,7 @@ async def run_inference_endpoint(
     request: Request,
     payload: RunInferenceRequest,
     background_tasks: BackgroundTasks,
-    _: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     """
@@ -127,6 +127,7 @@ async def run_inference_endpoint(
         task_id,
         payload.model_version,
         payload.threshold,
+        current_user.user_id,
     )
     return {
         "task_id":         task_id,
@@ -241,7 +242,7 @@ async def model_metrics(
 async def update_model_endpoint(
     version: str,
     payload: ModelActivationRequest,
-    _: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     """admin — activa esta versión (is_active=true) y desactiva las demás. Limpia el caché en memoria."""
@@ -254,7 +255,7 @@ async def update_model_endpoint(
                 "allowed": [True],
             },
         )
-    return await activate_model(db, version_name=version)
+    return await activate_model(db, version_name=version, user_id=current_user.user_id)
 
 
 @router.get("/models")
