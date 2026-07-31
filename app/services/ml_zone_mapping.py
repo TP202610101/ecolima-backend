@@ -16,15 +16,32 @@ testear antes de conectar nada.
 FEATURE_COLUMNS (este backend, 20 features) y las 16 features crudas que
 espera ecolima-ml (contrato §3) fueron diseñados por separado y comparten
 muy poco. De las 16 crudas de ecolima-ml, candidate_zones aporta datos reales
-para 8 (contando el puente has_park_300m) más 1 derivable con una asunción
-explícita (nse_c_pct). Las otras 6 (ver UNMAPPED_ML_FEATURES) no tienen
-ninguna columna equivalente en candidate_zones hoy — no se inventan valores
-para ellas: el payload simplemente las omite. Eso significa que, tal como
-está HOY el dataset del backend, un payload de este mapeo casi con toda
-seguridad NO alcanza para que el ColumnTransformer de ecolima-ml prediga sin
-error (contrato: "no se pudo verificar por ejecución... KeyError/ValueError
-esperado por lectura de la librería"). Resolver esto es trabajo pendiente,
-no algo que este mapeo pueda resolver inventando datos.
+para 9 (contando el puente has_park_300m y recycling_density_1km, ver abajo)
+más 1 derivable con una asunción explícita (nse_c_pct). Las otras 5 (ver
+UNMAPPED_ML_FEATURES) no tienen ninguna columna equivalente en candidate_zones
+hoy — no se inventan valores para ellas: el payload simplemente las omite.
+Eso significa que, tal como está HOY el dataset del backend, un payload de
+este mapeo casi con toda seguridad NO alcanza para que el ColumnTransformer
+de ecolima-ml prediga sin error (contrato: "no se pudo verificar por
+ejecución... KeyError/ValueError esperado por lectura de la librería").
+Resolver esto es trabajo pendiente, no algo que este mapeo pueda resolver
+inventando datos. Ver `features-faltantes-backend.md` (auditoría dedicada)
+para el detalle columna por columna de cada una de las 5 restantes.
+
+── recycling_density_1km (cerrado en esta ronda) ─────────────────────────────
+No es una columna de candidate_zones — a diferencia del resto de campos que
+este módulo mapea, se calcula con
+geo_service.count_recycling_points_within_radius(db, radius_m=1000), el
+mismo patrón PostGIS que ya usa calculate_existing_points_500m (ST_DWithin
+sobre recycling_points), solo con el radio parametrizado a 1000m en vez de
+500m. Es responsabilidad del CALLER de map_candidate_zone_to_ml_payload
+ejecutar esa consulta y mezclar el resultado en el dict `zone` bajo la clave
+"recycling_density_1km" antes de invocar esta función — mantiene el mapeo en
+sí puro y sin I/O. Confirmado que la feature es un CONTEO entero, no una
+densidad/área (ecolima-ml/src/ml/config.py:51 — "puntos de reciclaje
+existentes en radio 1km"; data_generator.py genera esta columna con
+rng.poisson(), un generador de conteos, no de densidades continuas) — no se
+divide entre el área del círculo de 1km.
 """
 
 from typing import Any
@@ -34,13 +51,14 @@ from typing import Any
 # -- ni con un valor inventado ni como null -- se omiten del payload.
 # poi_parks_500m NO está en esta lista: se cubre indirectamente mandando
 # has_park_300m (ver el puente de compatibilidad más abajo).
+# recycling_density_1km TAMPOCO está: se cubre vía
+# geo_service.count_recycling_points_within_radius (ver docstring del módulo).
 UNMAPPED_ML_FEATURES: frozenset[str] = frozenset({
     "num_households",
     "walkability_score",
     "poi_commercial_500m",
     "poi_educational_500m",
     "land_use_encoded",
-    "recycling_density_1km",
 })
 
 # Features que el servidor de ecolima-ml SIEMPRE recalcula si sus raw están
@@ -67,6 +85,13 @@ def map_candidate_zone_to_ml_payload(zone: dict[str, Any]) -> dict[str, Any]:
         el servidor deriva poi_parks_500m = has_park_300m.astype(float) si
         poi_parks_500m no viene (contrato §2/§3, preprocessing.py:72-73) --
         es el único puente de compatibilidad documentado en el contrato.
+      - recycling_density_1km: NO es una columna de candidate_zones. Si el
+        caller ya la calculó (geo_service.count_recycling_points_within_radius,
+        radius_m=1000) y la puso en `zone["recycling_density_1km"]`, se manda
+        tal cual (conteo entero, confirmado contra ecolima-ml/config.py y
+        data_generator.py -- no es una densidad/área). Si no está presente,
+        se omite como cualquier otro campo ausente -- este mapeo no ejecuta
+        la consulta él mismo, sigue sin hacer I/O.
       - accessibility_composite, nse_high_ratio, recycling_deficit: NUNCA se
         mandan. El servidor las recalcula siempre que sus raw estén
         presentes, así que mandarlas no tendría efecto (contrato §2) --
@@ -125,5 +150,12 @@ def map_candidate_zone_to_ml_payload(zone: dict[str, Any]) -> dict[str, Any]:
     # ── Puente de compatibilidad documentado (contrato §2, §3) ──────────────
     if zone.get("has_park_300m") is not None:
         payload["has_park_300m"] = bool(zone["has_park_300m"])
+
+    # recycling_density_1km: no es columna de candidate_zones -- el caller la
+    # calcula con geo_service.count_recycling_points_within_radius(db, 1000)
+    # y la mezcla en `zone` antes de llamar a esta función (ver docstring del
+    # módulo). Conteo entero, no densidad -- sin conversión.
+    if zone.get("recycling_density_1km") is not None:
+        payload["recycling_density_1km"] = int(zone["recycling_density_1km"])
 
     return payload

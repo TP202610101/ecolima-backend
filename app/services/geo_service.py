@@ -486,6 +486,45 @@ async def calculate_existing_points_500m(db: AsyncSession) -> dict:
     return {"updated_zones": result.rowcount if result.rowcount >= 0 else 0}
 
 
+async def count_recycling_points_within_radius(db: AsyncSession, radius_m: int) -> dict[int, int]:
+    """
+    Solo lectura — cuenta recycling_points en un buffer de radius_m metros
+    por cada candidate_zone. A diferencia de calculate_existing_points_500m,
+    NO persiste nada (no hay columna candidate_zones.recycling_density_1km
+    que actualizar) — devuelve {zone_id: conteo} para que el caller lo use
+    donde haga falta. Mismo patrón PostGIS (ST_DWithin sobre ::geography) que
+    ya usa calculate_existing_points_500m, con el radio parametrizado en vez
+    de hardcodeado.
+
+    Origen del uso actual: recycling_density_1km, la feature cruda que
+    espera ecolima-ml (contrato-ml-api.md §3) — "puntos de reciclaje
+    existentes en radio 1km" (ecolima-ml/src/ml/config.py:51), confirmado
+    como conteo entero, no densidad/área (data_generator.py usa
+    rng.poisson(), un generador de conteos). Ver
+    app/services/ml_zone_mapping.py::map_candidate_zone_to_ml_payload.
+    """
+    rows = (
+        await db.execute(
+            text("""
+                SELECT
+                    cz.zone_id,
+                    (
+                        SELECT COUNT(*)::int
+                        FROM recycling_points rp
+                        WHERE ST_DWithin(
+                            rp.geometry::geography,
+                            cz.geometry::geography,
+                            :radius_m
+                        )
+                    ) AS point_count
+                FROM candidate_zones cz
+            """),
+            {"radius_m": radius_m},
+        )
+    ).all()
+    return {row.zone_id: row.point_count for row in rows}
+
+
 async def get_saturation_data(db: AsyncSession) -> list[dict]:
     """
     Calcula el porcentaje de saturación por distrito.

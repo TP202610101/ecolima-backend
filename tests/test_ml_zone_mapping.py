@@ -85,6 +85,27 @@ def test_mapping_never_emits_unmapped_features():
     assert UNMAPPED_ML_FEATURES.isdisjoint(payload.keys())
 
 
+def test_mapping_emits_recycling_density_1km_when_caller_provides_it():
+    """recycling_density_1km no es columna de candidate_zones -- el caller la
+    calcula (geo_service.count_recycling_points_within_radius, radius_m=1000)
+    y la mezcla en el dict antes de llamar al mapeo. Si está presente, se
+    manda tal cual: conteo entero, sin conversión (no es una densidad)."""
+    row = {**KNOWN_ZONE_ROW, "recycling_density_1km": 3}
+    payload = map_candidate_zone_to_ml_payload(row)
+    assert payload == {**EXPECTED_PAYLOAD, "recycling_density_1km": 3}
+    # También debe seguir siendo un MLZoneFeatures válido.
+    zone = MLZoneFeatures(**payload)
+    assert zone.recycling_density_1km == 3
+
+
+def test_mapping_omits_recycling_density_1km_when_caller_does_not_provide_it():
+    """Sin ese enriquecimiento previo (el caso de hoy, nada llama a
+    count_recycling_points_within_radius todavía), se omite como cualquier
+    otro campo ausente -- nunca se manda en 0 ni en null por defecto."""
+    payload = map_candidate_zone_to_ml_payload(KNOWN_ZONE_ROW)
+    assert "recycling_density_1km" not in payload
+
+
 def test_mapping_omits_missing_source_columns():
     """Si la fila no trae una columna origen, el payload simplemente la
     omite -- nunca manda None/null para rellenar."""
