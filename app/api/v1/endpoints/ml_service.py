@@ -84,7 +84,7 @@ async def ml_service_predict(
     """admin — predicción para una zona candidata (opcionalmente con explicación SHAP)."""
     try:
         return await client.predict(
-            zone=payload.zone,
+            zone=payload.zone.model_dump(exclude_none=True),
             zone_id=payload.zone_id,
             model_name=payload.model_name,
             include_explanation=payload.include_explanation,
@@ -104,7 +104,7 @@ async def ml_service_predict_batch(
     """admin — predicción batch para zonas candidatas."""
     try:
         return await client.predict_batch(
-            zones=payload.zones,
+            zones=[z.model_dump(exclude_none=True) for z in payload.zones],
             zone_ids=payload.zone_ids,
             model_name=payload.model_name,
         )
@@ -123,7 +123,7 @@ async def ml_service_recommendations(
     """admin — ranking top-N de zonas candidatas según el modelo externo."""
     try:
         return await client.recommendations(
-            zones=payload.zones,
+            zones=[z.model_dump(exclude_none=True) for z in payload.zones],
             zone_ids=payload.zone_ids,
             model_name=payload.model_name,
             top_n=payload.top_n,

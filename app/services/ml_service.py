@@ -520,6 +520,23 @@ async def run_inference(
         await db.commit()
 
     # 1. Cargar modelo
+    #
+    # TODO(conexión ecolima-ml, apagada — settings.ml_use_remote_api=False):
+    # este es el punto de conmutación. Cuando la instancia de ecolima-ml esté
+    # arriba y el mapeo esté probado contra ella (tests skip en
+    # tests/test_ml_zone_mapping.py), reemplazar el bloque "1. Cargar modelo"
+    # + "3. Preparar features" + "4. Inferencia" por:
+    #   if settings.ml_use_remote_api:
+    #       from app.services.ml_zone_mapping import map_candidate_zone_to_ml_payload
+    #       from app.services.ml_api_client import get_ml_api_client
+    #       payloads = [map_candidate_zone_to_ml_payload(row) for row in ...]
+    #       result = await get_ml_api_client().predict_batch(zones=payloads, zone_ids=zone_ids)
+    #       scores = [item["suitability_score"] for item in result["items"]]
+    # El SHAP local (paso 5, TreeExplainer sobre el .pkl) dejaría de aplicar
+    # tal cual: ecolima-ml devuelve su propio top_features vía
+    # include_explanation, con shape distinto (MLTopFeature) al de
+    # generate_explanation() — mapeo de texto pendiente de diseño, no
+    # resuelto en esta ronda. No activar sin resolver eso primero.
     _update_task(5)
     model = await asyncio.to_thread(load_model, model_version)
     _update_task(15)
