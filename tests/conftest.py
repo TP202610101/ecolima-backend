@@ -9,6 +9,7 @@ from sqlalchemy.pool import NullPool
 
 from main import app
 from app.core.config import Settings
+from app.core.limiter import limiter
 from app.db.session import get_session
 
 # Prefijo obligatorio para cualquier archivo subido por un test. Permite
@@ -37,7 +38,16 @@ async def _delete_dataset(session: AsyncSession, dataset_id: int) -> None:
 
 @pytest_asyncio.fixture
 async def client():
-    """Cliente HTTP async con NullPool engine — aislamiento completo entre tests."""
+    """Cliente HTTP async con NullPool engine — aislamiento completo entre tests.
+
+    limiter.reset() antes y después: el rate limiter (slowapi) guarda su
+    estado en el objeto `limiter` global, compartido por todos los tests del
+    proceso (todos importan el mismo `main.app`). Sin resetear, los límites
+    de /login (5/min) u otros endpoints se acumularían entre tests -- un test
+    que llama admin_token varias veces, o simplemente el volumen total de
+    tests que usan la fixture, podría gatillar 429 en un test que no tiene
+    nada que ver con rate limiting."""
+    limiter.reset()
     TestSession, engine = _make_test_session_factory()
 
     async def _override_get_session():
@@ -55,14 +65,19 @@ async def client():
 
     app.dependency_overrides.clear()
     await engine.dispose()
+    limiter.reset()
 
 
 @pytest_asyncio.fixture
 async def admin_token(client: AsyncClient) -> str:
-    """JWT del usuario admin seed (admin@ecolima.pe)."""
+    """JWT del usuario admin seed. Credenciales desde Settings (ADMIN_EMAIL/
+    ADMIN_PASSWORD del entorno de test) -- nunca hardcodeadas; deben coincidir
+    con lo que sembró seed_admin.py en esta base de datos, que lee las mismas
+    variables."""
+    settings = Settings()
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"email": "admin@ecolima.pe", "password": "AdminSeguro2026!"},
+        json={"email": settings.admin_email, "password": settings.admin_password},
     )
     assert resp.status_code == 200, f"Login falló: {resp.text}"
     return resp.json()["access_token"]

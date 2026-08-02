@@ -1,7 +1,7 @@
 """Crea la cuenta de analista para pruebas locales.
 
 Uso (desde la raíz de ecolima-backend, con la DB levantada):
-    python scripts/create_analista.py
+    ANALISTA_PASSWORD=... python scripts/create_analista.py
 """
 
 import asyncio
@@ -23,7 +23,15 @@ if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 EMAIL = "ana@analista.com"
-PASSWORD = "analista123@"
+PASSWORD = os.getenv("ANALISTA_PASSWORD")
+if not PASSWORD:
+    print(
+        "ERROR: ANALISTA_PASSWORD no está seteada en el entorno. "
+        "Este script ya no usa un valor por defecto -- setea la variable "
+        "explícitamente antes de correrlo.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 FULL_NAME = "Ana Analista"
 ROLE = "analista"
 

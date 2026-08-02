@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 from dotenv import load_dotenv
 import asyncpg
@@ -11,7 +12,15 @@ if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@ecolima.pe")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminSeguro2026!")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    print(
+        "ERROR: ADMIN_PASSWORD no está seteada en el entorno. "
+        "Este script ya no usa un valor por defecto -- setea la variable "
+        "explícitamente antes de correrlo.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 async def seed_admin():
     conn = await asyncpg.connect(DATABASE_URL)

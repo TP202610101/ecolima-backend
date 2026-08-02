@@ -1,7 +1,8 @@
-"""Resetea la cuenta admin local: contraseña desde .env, desbloqueo e intentos a 0.
+"""Resetea la cuenta admin: contraseña desde la variable de entorno
+ADMIN_PASSWORD (obligatoria, sin fallback), desbloqueo e intentos a 0.
 
 Uso (desde la raíz de ecolima-backend, con la DB levantada):
-    python scripts/reset_admin.py
+    ADMIN_PASSWORD=... python scripts/reset_admin.py
 """
 
 import asyncio
@@ -23,7 +24,15 @@ if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@ecolima.pe")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminSeguro2026!")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    print(
+        "ERROR: ADMIN_PASSWORD no está seteada en el entorno. "
+        "Este script ya no usa un valor por defecto -- setea la variable "
+        "explícitamente antes de correrlo.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 async def reset_admin() -> None:
@@ -38,7 +47,7 @@ async def reset_admin() -> None:
         if result == "UPDATE 0":
             print(f"No existe {ADMIN_EMAIL}; corre primero los seeds.")
         else:
-            print(f"Admin {ADMIN_EMAIL} reseteado. Password: la de ADMIN_PASSWORD en .env")
+            print(f"Admin {ADMIN_EMAIL} reseteado con la contraseña de la variable de entorno ADMIN_PASSWORD.")
 
         rows = await conn.fetch(
             "SELECT email, role, is_active, failed_login_count, locked_until FROM users ORDER BY user_id"

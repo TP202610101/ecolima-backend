@@ -6,16 +6,20 @@ Requiere la base de datos de desarrollo con el usuario admin seed.
 import pytest
 from httpx import AsyncClient
 
+from app.core.config import Settings
 from tests.conftest import auth_headers
 
 pytestmark = pytest.mark.asyncio
 
 
 async def test_login_success(client: AsyncClient):
-    """Login con credenciales válidas retorna access_token y datos del usuario."""
+    """Login con credenciales válidas retorna access_token y datos del usuario.
+    Contraseña desde Settings (ADMIN_PASSWORD del entorno de test) -- nunca
+    hardcodeada."""
+    settings = Settings()
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"email": "admin@ecolima.pe", "password": "AdminSeguro2026!"},
+        json={"email": settings.admin_email, "password": settings.admin_password},
     )
     assert resp.status_code == 200
     data = resp.json()

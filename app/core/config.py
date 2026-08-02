@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     smtp_pass: str | None = None
     admin_email: str
     admin_password: str
+    # Solo usada por scripts/create_analista.py (cuenta de prueba local) --
+    # opcional porque no todos los entornos crean esa cuenta.
+    analista_password: str | None = None
     ml_inference_threshold: float = 0.5
     ml_priority_high: float = 0.7
     ml_priority_medium: float = 0.4
