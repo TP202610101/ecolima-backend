@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_role
@@ -15,7 +15,7 @@ router = APIRouter()
 
 @router.post("/recalculate")
 async def geo_recalculate(
-    threshold_m: int = 200,
+    threshold_m: int = Query(default=200, ge=0, le=5000),
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):

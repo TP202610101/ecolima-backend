@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,9 +44,9 @@ async def map_points(
     material: str | None = None,
     point_type: str | None = None,
     verified: bool | None = None,
-    lat: float | None = None,
-    lon: float | None = None,
-    radius_m: int = 1000,
+    lat: float | None = Query(default=None, ge=-90, le=90),
+    lon: float | None = Query(default=None, ge=-180, le=180),
+    radius_m: int = Query(default=1000, ge=1),
     user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_session),
 ):
