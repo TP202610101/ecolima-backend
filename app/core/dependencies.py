@@ -1,9 +1,14 @@
+import logging
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_access_token
 from app.db.session import get_session
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer()
 _optional_bearer_scheme = HTTPBearer(auto_error=False)
@@ -16,13 +21,29 @@ async def get_current_user(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
 
+    # Token inválido/expirado/con firma incorrecta -> siempre 401, nunca 503
+    # (antes JWTError caía en el except Exception genérico de abajo y se
+    # devolvía como "servicio no disponible" -- ver auditoria-seguridad-backend.md I2).
     try:
         payload = decode_access_token(credentials.credentials)
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
+
+    try:
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
-        user = await User.get_by_id(db, int(user_id))
+        try:
+            user_id_int = int(user_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
+        user = await User.get_by_id(db, user_id_int)
         if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
+        if not user.is_active:
+            # Antes solo se revisaba en /login -- un usuario desactivado a
+            # mitad de sesión seguía pudiendo usar su token hasta que
+            # expirara. Ver auditoria-seguridad-backend.md I4.
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
         if payload.get("tv", 0) != (user.token_version or 0):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales incorrectas")
@@ -30,6 +51,10 @@ async def get_current_user(
     except HTTPException:
         raise
     except Exception:
+        # Fallo interno real (ej. BD no disponible) -- se loguea como error,
+        # no se silencia, y sí es un 503 legítimo (a diferencia de un JWT
+        # inválido, que ahora nunca llega hasta acá).
+        logger.exception("Fallo inesperado en get_current_user")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servicio temporalmente no disponible")
 
 

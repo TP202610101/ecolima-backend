@@ -1,10 +1,11 @@
 import io
 import json
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_role, get_current_user
+from app.core.limiter import limiter
 from app.db.session import get_session
 from app.models.user import User
 from app.schemas.dataset import (
@@ -38,7 +39,9 @@ router = APIRouter()
 
 
 @router.post("", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def upload_dataset(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
