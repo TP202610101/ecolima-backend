@@ -159,4 +159,25 @@ async def test_ml_service_upstream_error_maps_502(client: AsyncClient, admin_tok
     finally:
         app.dependency_overrides.pop(get_ml_api_client, None)
     assert resp.status_code == 502
-    assert resp.json()["detail"]["code"] == "ML_API_ERROR"
+    body = resp.json()
+    assert body["detail"]["code"] == "ML_API_ERROR"
+    # I8: el texto crudo del upstream (potencialmente un traceback) no debe
+    # reenviarse al cliente -- solo se loguea server-side.
+    assert "poblacion_500m" not in body["detail"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_ml_api_client_unavailable_error_does_not_leak_base_url():
+    """I7: si la API ML no responde, el mensaje de MLApiUnavailableError no
+    debe incluir la URL/IP interna del servicio -- eso es justo lo que
+    _map_ml_error() reenvía tal cual al cliente vía str(exc)."""
+    from app.services.ml_api_client import MLApiClient
+
+    unreachable_url = "http://127.0.0.1:1"
+    api_client = MLApiClient(base_url=unreachable_url, timeout_seconds=1.0)
+    with pytest.raises(MLApiUnavailableError) as exc_info:
+        await api_client.health()
+
+    message = str(exc_info.value)
+    assert "127.0.0.1" not in message
+    assert unreachable_url not in message

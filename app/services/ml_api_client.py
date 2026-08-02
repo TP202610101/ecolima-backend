@@ -18,6 +18,7 @@ finales de la tesis y no deben presentarse como evidencia empírica.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -25,19 +26,27 @@ import httpx
 from app.core.config import Settings
 
 settings = Settings()
+logger = logging.getLogger(__name__)
 
 
 class MLApiUnavailableError(Exception):
-    """La API de ecolima-ml no responde (conexión rechazada / timeout)."""
+    """La API de ecolima-ml no responde (conexión rechazada / timeout). El
+    mensaje es genérico a propósito -- no incluye la URL/IP interna del
+    servicio (ver auditoria-seguridad-backend.md I7); el detalle completo
+    (incluyendo base_url) se loguea server-side, no se expone al cliente."""
 
 
 class MLApiError(Exception):
-    """La API de ecolima-ml respondió con un error HTTP."""
+    """La API de ecolima-ml respondió con un error HTTP. `upstream_detail`
+    (texto crudo del upstream, potencialmente un traceback de sklearn/Python
+    -- ver contrato-ml-api.md) se loguea server-side pero nunca se expone al
+    cliente (ver auditoria-seguridad-backend.md I8); usar `str(exc)` o
+    `status_code` para el mensaje que sí es seguro mostrar."""
 
-    def __init__(self, status_code: int, detail: str):
+    def __init__(self, status_code: int, upstream_detail: str):
         self.status_code = status_code
-        self.detail = detail
-        super().__init__(f"ML API {status_code}: {detail}")
+        self.upstream_detail = upstream_detail
+        super().__init__(f"ML API respondió {status_code}")
 
 
 class MLApiClient:
@@ -65,15 +74,15 @@ class MLApiClient:
             ) as client:
                 response = await client.request(method, path, params=params, json=json)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            raise MLApiUnavailableError(
-                f"No se pudo contactar la API ML en {self.base_url}: {exc}"
-            ) from exc
+            logger.warning("No se pudo contactar la API ML en %s: %s", self.base_url, exc)
+            raise MLApiUnavailableError("El servicio de ML externo no está disponible.") from exc
 
         if response.status_code >= 400:
             try:
                 detail = response.json().get("detail", response.text)
             except ValueError:
                 detail = response.text
+            logger.warning("ML API upstream error %s: %s", response.status_code, detail)
             raise MLApiError(response.status_code, str(detail))
 
         return response.json()

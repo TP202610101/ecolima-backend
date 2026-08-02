@@ -37,9 +37,15 @@ def _map_ml_error(exc: Exception) -> HTTPException:
             detail={"code": "ML_API_UNAVAILABLE", "message": str(exc)},
         )
     if isinstance(exc, MLApiError):
+        # exc.upstream_detail (texto crudo del upstream, ya logueado en
+        # ml_api_client._request) NUNCA se expone al cliente -- ver
+        # auditoria-seguridad-backend.md I8.
         return HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"code": "ML_API_ERROR", "message": exc.detail},
+            detail={
+                "code": "ML_API_ERROR",
+                "message": f"La API de ecolima-ml respondió con un error ({exc.status_code}).",
+            },
         )
     return HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
