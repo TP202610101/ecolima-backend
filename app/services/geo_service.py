@@ -380,6 +380,92 @@ async def get_nearby_points_geojson(
     return {"type": "FeatureCollection", "features": features}
 
 
+# ── Endpoint público /public/recycling-points ─────────────────────────────────
+# Superficie sin autenticación (junto al modo "cercanos" de /map/points). Solo
+# conoce recycling_points -- puntos físicos reales -- nunca candidate_zones ni
+# nada de Sección C/ML. Ver auditoria-seguridad-backend.md, categoría 8, y
+# app/api/v1/endpoints/public.py.
+
+PUBLIC_MAX_POINTS = 100
+
+# Alias de entrada -> término canónico tal como aparece en
+# recycling_points.materials_accepted (verificado con un DISTINCT real
+# contra Neon: los 5 materiales base son Papel/Plástico/Vidrio/Metal/Cartón,
+# combinados en strings como "Papel, Plástico, Vidrio"). No se acepta
+# cualquier string arbitrario -- si no está en este mapa, 422.
+PUBLIC_MATERIAL_ALIASES: dict[str, str] = {
+    "papel": "Papel",
+    "plastico": "Plástico",
+    "plástico": "Plástico",
+    "vidrio": "Vidrio",
+    "metal": "Metal",
+    "carton": "Cartón",
+    "cartón": "Cartón",
+}
+
+
+async def get_public_nearby_recycling_points(
+    db: AsyncSession,
+    lat: float,
+    lng: float,
+    radius_m: int,
+    material: str | None = None,
+) -> dict:
+    """
+    Solo lectura, público -- puntos reales de recycling_points cerca de
+    (lat, lng). `material`, si se pasa, ya debe venir como término canónico
+    (ver PUBLIC_MATERIAL_ALIASES -- la validación del alias vive en el
+    endpoint, no acá).
+
+    Devuelve SOLO id/nombre/lat/lng/materiales_aceptados/distancia_m -- nunca
+    ml_score, priority_label, is_recommended, recommendation_reason ni ningún
+    otro campo de candidate_zones. Respuesta vacía es válida (la mayoría de
+    distritos no tienen puntos cargados todavía) -- nunca 404.
+    """
+    conditions = [
+        "ST_DWithin(rp.geometry::geography, ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography, :radius_m)"
+    ]
+    params: dict = {"lat": lat, "lng": lng, "radius_m": radius_m, "limit": PUBLIC_MAX_POINTS}
+    if material is not None:
+        conditions.append("rp.materials_accepted ILIKE :material")
+        params["material"] = f"%{material}%"
+
+    stmt = text(f"""
+        SELECT
+            rp.point_id,
+            rp.address,
+            rp.latitude,
+            rp.longitude,
+            rp.materials_accepted,
+            ST_Distance(
+                rp.geometry::geography,
+                ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography
+            ) AS distance_m
+        FROM recycling_points rp
+        WHERE {' AND '.join(conditions)}
+        ORDER BY distance_m ASC
+        LIMIT :limit
+    """)
+    rows = (await db.execute(stmt, params)).mappings().all()
+
+    points = [
+        {
+            "id": row["point_id"],
+            "nombre": row["address"],
+            "lat": row["latitude"],
+            "lng": row["longitude"],
+            "materiales_aceptados": (
+                [m.strip() for m in row["materials_accepted"].split(",") if m.strip()]
+                if row["materials_accepted"]
+                else []
+            ),
+            "distancia_m": round(float(row["distance_m"]), 1),
+        }
+        for row in rows
+    ]
+    return {"points": points, "count": len(points)}
+
+
 # ── Pipeline ML — queries PostGIS ─────────────────────────────────────────────
 
 async def calculate_is_suitable(db: AsyncSession, threshold_m: int = 200) -> dict:
