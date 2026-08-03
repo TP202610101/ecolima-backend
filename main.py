@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import select, text
 
-from app.api.v1.endpoints import alerts, auth, datasets
+from app.api.v1.endpoints import alerts, auth, datasets, debug
 from app.api.v1.endpoints import map as map_
 from app.api.v1.endpoints import ml, ml_service, geo, users
 from app.core.limiter import limiter
@@ -61,6 +61,10 @@ app.include_router(ml.router,       prefix="/api/v1/ml",           tags=["ml"])
 app.include_router(ml_service.router, prefix="/api/v1/ml/service",  tags=["ml-service"])
 app.include_router(geo.router,      prefix="/api/v1/geo",          tags=["geo"])
 app.include_router(alerts.router,   prefix="/api/v1/alerts",       tags=["alerts"])
+
+# TEMPORAL -- diagnóstico SEC-AZURE-1 (IP/headers detrás del proxy de Azure).
+# ELIMINAR esta línea y app/api/v1/endpoints/debug.py tras la verificación.
+app.include_router(debug.router,    prefix="/api/v1/debug",        tags=["debug-temporal"])
 
 
 # ── Health check (requerido para Azure App Service) ────────────────────────────
