@@ -21,9 +21,19 @@ class Settings(BaseSettings):
     smtp_pass: str | None = None
     admin_email: str
     admin_password: str
+    # Solo usada por scripts/create_analista.py (cuenta de prueba local) --
+    # opcional porque no todos los entornos crean esa cuenta.
+    analista_password: str | None = None
     ml_inference_threshold: float = 0.5
     ml_priority_high: float = 0.7
     ml_priority_medium: float = 0.4
+    # Integración con la API de ecolima-ml (servicio local, contrato v0.3)
+    ml_api_url: str = "http://localhost:8001"
+    ml_api_timeout_seconds: float = 15.0
+    # Apagado por defecto -- punto de conmutación preparado, no activado.
+    # run_inference sigue usando models/lightgbm_model.pkl mientras esto sea
+    # False. Ver TODO en ml_service.run_inference y app/services/ml_zone_mapping.py.
+    ml_use_remote_api: bool = False
 
     class Config:
         env_file = ".env"

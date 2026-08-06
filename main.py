@@ -8,9 +8,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import select, text
 
-from app.api.v1.endpoints import alerts, auth, datasets
+from app.api.v1.endpoints import alerts, auth, datasets, public
 from app.api.v1.endpoints import map as map_
-from app.api.v1.endpoints import ml, geo, users
+from app.api.v1.endpoints import ml, ml_service, geo, users
 from app.core.limiter import limiter
 from app.db.session import AsyncSessionLocal
 from app.models.model_version import ModelVersion
@@ -58,8 +58,13 @@ app.include_router(users.router,    prefix="/api/v1/admin/users",  tags=["users"
 app.include_router(datasets.router, prefix="/api/v1/datasets",     tags=["datasets"])
 app.include_router(map_.router,     prefix="/api/v1/map",          tags=["map"])
 app.include_router(ml.router,       prefix="/api/v1/ml",           tags=["ml"])
+app.include_router(ml_service.router, prefix="/api/v1/ml/service",  tags=["ml-service"])
 app.include_router(geo.router,      prefix="/api/v1/geo",          tags=["geo"])
 app.include_router(alerts.router,   prefix="/api/v1/alerts",       tags=["alerts"])
+
+# ÚNICA superficie pública sin JWT junto al modo "cercanos" de /map/points --
+# ver app/api/v1/endpoints/public.py para el porqué y las restricciones.
+app.include_router(public.router,   prefix="/api/v1/public",       tags=["public"])
 
 
 # ── Health check (requerido para Azure App Service) ────────────────────────────

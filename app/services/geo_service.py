@@ -380,6 +380,92 @@ async def get_nearby_points_geojson(
     return {"type": "FeatureCollection", "features": features}
 
 
+# ── Endpoint público /public/recycling-points ─────────────────────────────────
+# Superficie sin autenticación (junto al modo "cercanos" de /map/points). Solo
+# conoce recycling_points -- puntos físicos reales -- nunca candidate_zones ni
+# nada de Sección C/ML. Ver auditoria-seguridad-backend.md, categoría 8, y
+# app/api/v1/endpoints/public.py.
+
+PUBLIC_MAX_POINTS = 100
+
+# Alias de entrada -> término canónico tal como aparece en
+# recycling_points.materials_accepted (verificado con un DISTINCT real
+# contra Neon: los 5 materiales base son Papel/Plástico/Vidrio/Metal/Cartón,
+# combinados en strings como "Papel, Plástico, Vidrio"). No se acepta
+# cualquier string arbitrario -- si no está en este mapa, 422.
+PUBLIC_MATERIAL_ALIASES: dict[str, str] = {
+    "papel": "Papel",
+    "plastico": "Plástico",
+    "plástico": "Plástico",
+    "vidrio": "Vidrio",
+    "metal": "Metal",
+    "carton": "Cartón",
+    "cartón": "Cartón",
+}
+
+
+async def get_public_nearby_recycling_points(
+    db: AsyncSession,
+    lat: float,
+    lng: float,
+    radius_m: int,
+    material: str | None = None,
+) -> dict:
+    """
+    Solo lectura, público -- puntos reales de recycling_points cerca de
+    (lat, lng). `material`, si se pasa, ya debe venir como término canónico
+    (ver PUBLIC_MATERIAL_ALIASES -- la validación del alias vive en el
+    endpoint, no acá).
+
+    Devuelve SOLO id/nombre/lat/lng/materiales_aceptados/distancia_m -- nunca
+    ml_score, priority_label, is_recommended, recommendation_reason ni ningún
+    otro campo de candidate_zones. Respuesta vacía es válida (la mayoría de
+    distritos no tienen puntos cargados todavía) -- nunca 404.
+    """
+    conditions = [
+        "ST_DWithin(rp.geometry::geography, ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography, :radius_m)"
+    ]
+    params: dict = {"lat": lat, "lng": lng, "radius_m": radius_m, "limit": PUBLIC_MAX_POINTS}
+    if material is not None:
+        conditions.append("rp.materials_accepted ILIKE :material")
+        params["material"] = f"%{material}%"
+
+    stmt = text(f"""
+        SELECT
+            rp.point_id,
+            rp.address,
+            rp.latitude,
+            rp.longitude,
+            rp.materials_accepted,
+            ST_Distance(
+                rp.geometry::geography,
+                ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography
+            ) AS distance_m
+        FROM recycling_points rp
+        WHERE {' AND '.join(conditions)}
+        ORDER BY distance_m ASC
+        LIMIT :limit
+    """)
+    rows = (await db.execute(stmt, params)).mappings().all()
+
+    points = [
+        {
+            "id": row["point_id"],
+            "nombre": row["address"],
+            "lat": row["latitude"],
+            "lng": row["longitude"],
+            "materiales_aceptados": (
+                [m.strip() for m in row["materials_accepted"].split(",") if m.strip()]
+                if row["materials_accepted"]
+                else []
+            ),
+            "distancia_m": round(float(row["distance_m"]), 1),
+        }
+        for row in rows
+    ]
+    return {"points": points, "count": len(points)}
+
+
 # ── Pipeline ML — queries PostGIS ─────────────────────────────────────────────
 
 async def calculate_is_suitable(db: AsyncSession, threshold_m: int = 200) -> dict:
@@ -484,6 +570,45 @@ async def calculate_existing_points_500m(db: AsyncSession) -> dict:
     )
     await db.commit()
     return {"updated_zones": result.rowcount if result.rowcount >= 0 else 0}
+
+
+async def count_recycling_points_within_radius(db: AsyncSession, radius_m: int) -> dict[int, int]:
+    """
+    Solo lectura — cuenta recycling_points en un buffer de radius_m metros
+    por cada candidate_zone. A diferencia de calculate_existing_points_500m,
+    NO persiste nada (no hay columna candidate_zones.recycling_density_1km
+    que actualizar) — devuelve {zone_id: conteo} para que el caller lo use
+    donde haga falta. Mismo patrón PostGIS (ST_DWithin sobre ::geography) que
+    ya usa calculate_existing_points_500m, con el radio parametrizado en vez
+    de hardcodeado.
+
+    Origen del uso actual: recycling_density_1km, la feature cruda que
+    espera ecolima-ml (contrato-ml-api.md §3) — "puntos de reciclaje
+    existentes en radio 1km" (ecolima-ml/src/ml/config.py:51), confirmado
+    como conteo entero, no densidad/área (data_generator.py usa
+    rng.poisson(), un generador de conteos). Ver
+    app/services/ml_zone_mapping.py::map_candidate_zone_to_ml_payload.
+    """
+    rows = (
+        await db.execute(
+            text("""
+                SELECT
+                    cz.zone_id,
+                    (
+                        SELECT COUNT(*)::int
+                        FROM recycling_points rp
+                        WHERE ST_DWithin(
+                            rp.geometry::geography,
+                            cz.geometry::geography,
+                            :radius_m
+                        )
+                    ) AS point_count
+                FROM candidate_zones cz
+            """),
+            {"radius_m": radius_m},
+        )
+    ).all()
+    return {row.zone_id: row.point_count for row in rows}
 
 
 async def get_saturation_data(db: AsyncSession) -> list[dict]:

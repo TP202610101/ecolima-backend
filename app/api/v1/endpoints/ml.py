@@ -3,7 +3,7 @@ import io
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,13 +88,13 @@ class RunInferenceRequest(BaseModel):
     threshold: float = 0.5
 
 
-@router.post("/run-inference")
+@router.post("/run-inference", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("20/minute")
 async def run_inference_endpoint(
     request: Request,
     payload: RunInferenceRequest,
     background_tasks: BackgroundTasks,
-    _: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
     """
@@ -127,6 +127,7 @@ async def run_inference_endpoint(
         task_id,
         payload.model_version,
         payload.threshold,
+        current_user.user_id,
     )
     return {
         "task_id":         task_id,
@@ -152,13 +153,17 @@ async def ml_recommendations(
     request: Request,
     priority: str = "all",
     district_id: int | None = None,
+    income_stratum: list[int] | None = Query(None),
     limit: int = 50,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
     """
     Auth (todos) — GeoJSON FeatureCollection de zonas recomendadas (is_recommended=true).
-    Filtros: priority=Alta|Media|Baja|all, district_id, limit (max 500).
+    Filtros: priority=Alta|Media|Baja|all, district_id, income_stratum
+    (multi-valor, 1-5; repetir el param: ?income_stratum=1&income_stratum=3;
+    sin enviarlo no se filtra por estrato; una zona sin estrato asignado
+    siempre se incluye), limit (max 500).
     ml_score solo visible para rol admin — analista y ciudadano no lo reciben.
     Ordenado por ml_score DESC.
     """
@@ -169,10 +174,18 @@ async def ml_recommendations(
             detail=f"priority debe ser uno de: {sorted(valid_priorities)}",
         )
 
+    valid_strata = {1, 2, 3, 4, 5}
+    if income_stratum is not None and not set(income_stratum) <= valid_strata:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"income_stratum debe ser uno o varios de: {sorted(valid_strata)}",
+        )
+
     data = await get_recommendations_geojson(
         db,
         priority=priority if priority != "all" else None,
         district_id=district_id,
+        income_stratum=income_stratum,
         limit=min(limit, 500),
         include_ml_score=current_user.role == "admin",
     )
@@ -180,8 +193,6 @@ async def ml_recommendations(
 
 
 # ── Versionado de modelos ─────────────────────────────────────────────────────
-# ORDEN CRÍTICO: /models/register ANTES de /models/{version}/...
-# para que el literal "register" no sea capturado como {version}.
 
 
 class RegisterModelRequest(BaseModel):
@@ -192,7 +203,12 @@ class RegisterModelRequest(BaseModel):
     features_used: list[str] | None = None
 
 
-@router.post("/models/register")
+class ModelActivationRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    is_active: bool
+
+
+@router.post("/models", status_code=status.HTTP_201_CREATED)
 async def register_model_endpoint(
     payload: RegisterModelRequest,
     current_user: User = Depends(require_role("admin")),
@@ -222,14 +238,24 @@ async def model_metrics(
     return await get_model_metrics(db, version_name=version)
 
 
-@router.post("/models/{version}/activate")
-async def activate_model_endpoint(
+@router.patch("/models/{version}")
+async def update_model_endpoint(
     version: str,
-    _: User = Depends(require_role("admin")),
+    payload: ModelActivationRequest,
+    current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — activa esta versión y desactiva las demás. Limpia el caché en memoria."""
-    return await activate_model(db, version_name=version)
+    """admin — activa esta versión (is_active=true) y desactiva las demás. Limpia el caché en memoria."""
+    if not payload.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "UNSUPPORTED_TRANSITION",
+                "message": "Solo se soporta is_active=true",
+                "allowed": [True],
+            },
+        )
+    return await activate_model(db, version_name=version, user_id=current_user.user_id)
 
 
 @router.get("/models")

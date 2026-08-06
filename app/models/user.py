@@ -14,7 +14,7 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     full_name = Column(String(200), nullable=True)
     role = Column(String(20), nullable=False, default="analista")
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     token_version = Column(Integer, nullable=False, default=0)
     failed_login_count = Column(Integer, nullable=False, default=0)

@@ -1,5 +1,73 @@
 # ecolima-backend
-FastAPI backend for EcoLima — recycling point optimization using GIS + LightGBM for Lima Metropolitana
+
+Backend FastAPI de **EcoLima ML** — recomienda ubicaciones óptimas para nuevos
+puntos de reciclaje en Lima Metropolitana combinando datos geoespaciales
+(PostGIS) con un modelo LightGBM entrenado por el pipeline
+[`ecolima-ml`](../ecolima-ml). Proyecto de tesis, Ingeniería de Software —
+UPC 2026 (Alexander Cantoral, backend/frontend · Nikole García, ML).
+
+Stack: FastAPI (async) · SQLAlchemy 2.0 + asyncpg · PostgreSQL/PostGIS ·
+Alembic · JWT (python-jose) + bcrypt · LightGBM + SHAP · Azure App
+Service / Blob Storage.
+
+---
+
+## Quickstart local
+
+```bash
+# 1. Levantar PostgreSQL + PostGIS local (Docker)
+docker-compose up -d
+
+# 2. Entorno virtual
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS/Linux
+pip install -r requirements.txt
+
+# 3. Variables de entorno
+copy .env.example .env          # Windows — o `cp` en macOS/Linux
+# editar .env: SECRET_KEY (mínimo 32 caracteres), ADMIN_EMAIL, ADMIN_PASSWORD, etc.
+
+# 4. Migraciones + seeds
+make migrate                    # alembic upgrade head
+make seed                       # seed_districts.py + seed_admin.py
+
+# 5. Levantar el servidor
+uvicorn main:app --reload --port 8000
+```
+
+Swagger UI: http://localhost:8000/docs · Health check: http://localhost:8000/health
+
+## Tests
+
+```bash
+make test          # equivale a: pytest tests/ -v
+```
+
+Los tests son de integración sobre HTTP (`httpx.AsyncClient` + ASGI
+transport) y requieren `DATABASE_URL` apuntando a una Postgres/PostGIS
+accesible con el usuario admin ya sembrado (`make seed`). No existe base de
+datos de test separada todavía.
+
+## Variables de entorno
+
+Ver `.env.example` para la plantilla completa. Resumen:
+
+| Variable | Obligatoria | Descripción |
+|---|---|---|
+| `DATABASE_URL` | Sí | `postgresql+asyncpg://user:pass@host/db` |
+| `SECRET_KEY` | Sí | Firma JWT, mínimo 32 caracteres |
+| `AZURE_BLOB_CONNECTION_STRING` | Sí* | Storage del modelo `.pkl`. Con el placeholder de ejemplo, cae al fallback local (`models/lightgbm_model.pkl`) |
+| `AZURE_BLOB_CONTAINER_MODELS` | Sí* | Nombre del contenedor |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Sí | Usuario admin creado por `seed_admin.py` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | No (30) | Expiración del JWT |
+| `FRONTEND_URL` | No | Referencia informativa — **el CORS real está hardcodeado en `main.py`**, cambiar esta variable no tiene efecto |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | No | Alertas de saturación por email. Sin configurar, las alertas quedan solo en BD |
+| `ML_INFERENCE_THRESHOLD` | No (0.5) | Umbral de clasificación binaria |
+| `ML_PRIORITY_HIGH` / `ML_PRIORITY_MEDIUM` | No (0.7 / 0.4) | Umbrales de `priority_label` |
+
+\* Declaradas como obligatorias en `config.py`, pero el código las maneja
+defensivamente con fallback local si detecta el placeholder de ejemplo.
 
 ## Deploy en Azure — Notas
 

@@ -1,10 +1,11 @@
 import io
 import json
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_role, get_current_user
+from app.core.limiter import limiter
 from app.db.session import get_session
 from app.models.user import User
 from app.schemas.dataset import (
@@ -16,6 +17,7 @@ from app.schemas.dataset import (
     DatasetHistoryResponse,
     DatasetListItem,
     DatasetResponse,
+    DatasetStatusUpdateRequest,
     DatasetValidationResponse,
 )
 from app.services.dataset_service import (
@@ -36,8 +38,10 @@ from app.services.dataset_service import (
 router = APIRouter()
 
 
-@router.post("/upload", response_model=DatasetResponse)
+@router.post("", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def upload_dataset(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
@@ -82,11 +86,28 @@ async def validate_dataset_endpoint(
 @router.delete("/{dataset_id}/rows", response_model=DatasetDeleteRowsResponse)
 async def delete_dataset_rows_endpoint(
     dataset_id: int,
-    payload: DatasetDeleteRowsRequest,
+    payload: DatasetDeleteRowsRequest | None = None,
+    row_status: str | None = Query(default=None, alias="status"),
     confirm: bool = False,
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
+    """
+    ?status=incomplete       -> elimina todas las filas incompletas, sin body.
+    body {row_indices, reason} -> elimina las filas indicadas (comportamiento anterior).
+    """
+    if row_status == "incomplete":
+        return await delete_incomplete_rows(db=db, dataset_id=dataset_id, user_id=user.user_id)
+
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "MISSING_PAYLOAD",
+                "message": "Enviar {row_indices, reason} en el body, o ?status=incomplete",
+            },
+        )
+
     return await delete_dataset_rows(
         db=db,
         dataset_id=dataset_id,
@@ -95,15 +116,6 @@ async def delete_dataset_rows_endpoint(
         user_id=user.user_id,
         confirm=confirm,
     )
-
-
-@router.delete("/{dataset_id}/rows/incomplete", response_model=DatasetDeleteRowsResponse)
-async def delete_incomplete_rows_endpoint(
-    dataset_id: int,
-    user: User = Depends(require_role("admin")),
-    db: AsyncSession = Depends(get_session),
-):
-    return await delete_incomplete_rows(db=db, dataset_id=dataset_id, user_id=user.user_id)
 
 
 @router.patch("/{dataset_id}/cells", response_model=DatasetEditCellsResponse)
@@ -138,12 +150,23 @@ async def list_datasets(
     return response
 
 
-@router.post("/{dataset_id}/commit", response_model=DatasetCommitResponse)
-async def commit_dataset_endpoint(
+@router.patch("/{dataset_id}", response_model=DatasetCommitResponse)
+async def update_dataset_status_endpoint(
     dataset_id: int,
+    payload: DatasetStatusUpdateRequest,
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
+    """Único valor soportado hoy: {"status": "committed"} (reemplaza a POST /commit)."""
+    if payload.status != "committed":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "UNSUPPORTED_STATUS",
+                "message": "Solo se soporta status='committed'",
+                "allowed": ["committed"],
+            },
+        )
     result = await commit_dataset(db=db, dataset_id=dataset_id, user_id=user.user_id)
     return DatasetCommitResponse(**result)
 
