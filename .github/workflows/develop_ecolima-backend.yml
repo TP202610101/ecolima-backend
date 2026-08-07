@@ -2,12 +2,17 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 
+# DESACTIVADO: el App Service viejo (ecolima-backend, canadacentral) fue
+# reemplazado por el nuevo (ecolimabackend, eastus2), desplegado desde
+# deploy-ecolimabackend-nuevo.yml. Se comenta el trigger automático en vez
+# de borrar el archivo, para poder reactivarlo rápido si hiciera falta.
+# Para reactivar: descomentar el bloque `push:` de abajo.
 name: Build and deploy Python app to Azure Web App - ecolima-backend
 
 on:
-  push:
-    branches:
-      - develop
+  # push:
+  #   branches:
+  #     - develop
   workflow_dispatch:
 
 jobs:
