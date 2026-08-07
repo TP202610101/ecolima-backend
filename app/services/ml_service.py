@@ -319,14 +319,13 @@ def _try_load_from_azure(version: str) -> Any | None:
     """Intenta cargar el modelo desde Azure Blob Storage. Retorna None si falla."""
     try:
         from app.core.config import Settings
+        from app.services.blob_storage import is_configured, get_container_client
         settings = Settings()
         conn_str = settings.azure_blob_connection_string
         # Evitar llamada real si el .env aún tiene el placeholder
-        if not conn_str or "AccountName=..." in conn_str:
+        if not is_configured(conn_str):
             return None
-        from azure.storage.blob import BlobServiceClient
-        client = BlobServiceClient.from_connection_string(conn_str)
-        container = client.get_container_client(settings.azure_blob_container_models)
+        container = get_container_client(conn_str, settings.azure_blob_container_models)
         blob_name = "lightgbm_model.pkl" if version == "latest" else f"lightgbm_model_{version}.pkl"
         data = container.download_blob(blob_name).readall()
         model = pickle.loads(data)

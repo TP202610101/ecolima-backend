@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit_log import AuditLog
 from app.models.dataset import Dataset
 from app.models.recycling_point import RecyclingPoint
+from app.services.blob_storage import is_configured, get_container_client
 
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
@@ -62,6 +63,20 @@ def _read_csv_bytes(raw_bytes: bytes) -> pd.DataFrame:
     )
 
 
+def _blob_key(dataset_id: int, ext: str) -> str:
+    return f"{dataset_id}{ext}"
+
+
+def _datasets_container():
+    """Cliente del contenedor de datasets, o None si Blob no está configurado
+    (placeholder o variable ausente) -- en ese caso el llamador cae a disco local."""
+    from app.core.config import Settings
+    settings = Settings()
+    if not is_configured(settings.azure_blob_connection_string):
+        return None
+    return get_container_client(settings.azure_blob_connection_string, settings.azure_blob_container_datasets)
+
+
 def _get_dataset_file_path(dataset_id: int) -> Path | None:
     for ext in ALLOWED_EXTENSIONS:
         candidate = UPLOAD_DIR / f"{dataset_id}{ext}"
@@ -70,16 +85,46 @@ def _get_dataset_file_path(dataset_id: int) -> Path | None:
     return None
 
 
-def _save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> Path:
+def _get_dataset_blob(dataset_id: int, container):
+    """Devuelve el blob_client del primer archivo existente del dataset, o None."""
+    for ext in ALLOWED_EXTENSIONS:
+        blob_client = container.get_blob_client(_blob_key(dataset_id, ext))
+        if blob_client.exists():
+            return blob_client
+    return None
+
+
+def _save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> str:
     ext = _get_file_extension(filename)
+    container = _datasets_container()
+    if container is not None:
+        key = _blob_key(dataset_id, ext)
+        container.upload_blob(name=key, data=raw_bytes, overwrite=True)
+        return key
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     path = UPLOAD_DIR / f"{dataset_id}{ext}"
     path.write_bytes(raw_bytes)
-    return path
+    return str(path)
 
 
-def save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> Path:
+def save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> str:
     return _save_uploaded_dataset_file(dataset_id, filename, raw_bytes)
+
+
+def delete_dataset_file(dataset_id: int) -> None:
+    """Borra el archivo del dataset -- del contenedor de Blob si está configurado,
+    o de disco local en su defecto. Usada por la eliminación de datasets y por
+    el fixture de limpieza de tests (cleanup_datasets)."""
+    container = _datasets_container()
+    if container is not None:
+        blob_client = _get_dataset_blob(dataset_id, container)
+        if blob_client is not None:
+            blob_client.delete_blob()
+        return
+
+    for ext in ALLOWED_EXTENSIONS:
+        (UPLOAD_DIR / f"{dataset_id}{ext}").unlink(missing_ok=True)
 
 
 async def read_dataset_file(upload_file: UploadFile) -> tuple[pd.DataFrame, int, bytes]:
@@ -106,7 +151,44 @@ async def read_dataset_file(upload_file: UploadFile) -> tuple[pd.DataFrame, int,
     return df, file_size, raw_bytes
 
 
+def _parse_dataset_bytes(raw_bytes: bytes, extension: str) -> pd.DataFrame:
+    try:
+        if extension == ".csv":
+            return _read_csv_bytes(raw_bytes)
+        return pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Error al leer el archivo: {exc}",
+        )
+
+
+def _serialize_dataset(df: pd.DataFrame, extension: str) -> bytes:
+    if extension == ".csv":
+        return df.to_csv(index=False, encoding="utf-8").encode("utf-8")
+    if extension == ".xlsx":
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False, engine="openpyxl")
+        return buffer.getvalue()
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Formato de archivo de dataset no soportado.",
+    )
+
+
 def _load_dataset_file(dataset_id: int) -> tuple[pd.DataFrame, int]:
+    container = _datasets_container()
+    if container is not None:
+        blob_client = _get_dataset_blob(dataset_id, container)
+        if blob_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Archivo del dataset no encontrado.",
+            )
+        raw_bytes = blob_client.download_blob().readall()
+        extension = Path(blob_client.blob_name).suffix.lower()
+        return _parse_dataset_bytes(raw_bytes, extension), len(raw_bytes)
+
     path = _get_dataset_file_path(dataset_id)
     if path is None:
         raise HTTPException(
@@ -115,20 +197,7 @@ def _load_dataset_file(dataset_id: int) -> tuple[pd.DataFrame, int]:
         )
 
     raw_bytes = path.read_bytes()
-    extension = path.suffix.lower()
-
-    try:
-        if extension == ".csv":
-            df = _read_csv_bytes(raw_bytes)
-        else:
-            df = pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Error al leer el archivo: {exc}",
-        )
-
-    return df, len(raw_bytes)
+    return _parse_dataset_bytes(raw_bytes, path.suffix.lower()), len(raw_bytes)
 
 
 def _coerce_bool(value) -> bool | None:
@@ -190,25 +259,26 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
     return errors
 
 
-def _write_dataset_file(dataset_id: int, df: pd.DataFrame) -> Path:
+def _write_dataset_file(dataset_id: int, df: pd.DataFrame) -> None:
+    container = _datasets_container()
+    if container is not None:
+        blob_client = _get_dataset_blob(dataset_id, container)
+        if blob_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Archivo del dataset no encontrado.",
+            )
+        extension = Path(blob_client.blob_name).suffix.lower()
+        blob_client.upload_blob(_serialize_dataset(df, extension), overwrite=True)
+        return
+
     path = _get_dataset_file_path(dataset_id)
     if path is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Archivo del dataset no encontrado.",
         )
-
-    if path.suffix.lower() == ".csv":
-        df.to_csv(path, index=False, encoding="utf-8")
-    elif path.suffix.lower() == ".xlsx":
-        df.to_excel(path, index=False, engine="openpyxl")
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Formato de archivo de dataset no soportado.",
-        )
-
-    return path
+    path.write_bytes(_serialize_dataset(df, path.suffix.lower()))
 
 
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:

@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     azure_blob_connection_string: str
     azure_blob_container_models: str
+    # Con default porque el contenedor real ya se llama "datasets" en Azure --
+    # no rompe entornos (dev/test/CI) que todavía no la setean explícitamente.
+    azure_blob_container_datasets: str = "datasets"
     frontend_url: str = "http://localhost:5173"
     smtp_host: str | None = None
     smtp_port: int | None = None
