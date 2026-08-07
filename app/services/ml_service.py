@@ -2,17 +2,18 @@ import asyncio
 import json
 import logging
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException, status
-from sqlalchemy import and_, func, select, text, update
+from sqlalchemy import and_, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.candidate_zone import CandidateZone
+from app.models.inference_task import InferenceTask
 from app.models.model_version import ModelVersion
 from app.services.dataset_service import log_action
 
@@ -311,8 +312,12 @@ class ModelNotAvailableError(Exception):
 # In-memory model cache — evita recargar el .pkl en cada request
 _model_cache: dict[str, Any] = {}
 
-# In-memory task registry — estado de tareas de inferencia en curso
-_inference_tasks: dict[str, dict] = {}
+# Tareas 'running' sin actualización de progreso por más de este tiempo se
+# consideran huérfanas (el worker murió/reinició a mitad de la inferencia) --
+# se marcan como 'error' la próxima vez que se consulta su estado. Ver
+# get_inference_status. Una inferencia real de ~11k celdas tarda minutos, no
+# tanto como este umbral.
+ORPHAN_TASK_TIMEOUT_MINUTES = 15
 
 
 def _try_load_from_azure(version: str) -> Any | None:
@@ -506,9 +511,15 @@ async def run_inference(
     user_id, si se pasa, deja constancia en audit_log del inicio y fin de la
     corrida (quién la disparó, qué modelo, cuántas zonas, cuánto tardó).
     """
-    def _update_task(pct: int, zones: int = 0) -> None:
-        if task_id and task_id in _inference_tasks:
-            _inference_tasks[task_id].update({"progress_pct": pct, "zones_processed": zones})
+    async def _update_task(pct: int, zones: int = 0) -> None:
+        if not task_id:
+            return
+        await db.execute(
+            update(InferenceTask)
+            .where(InferenceTask.task_id == task_id)
+            .values(progress_pct=pct, zones_processed=zones, updated_at=datetime.utcnow())
+        )
+        await db.commit()
 
     started_at = datetime.utcnow()
     if user_id is not None:
@@ -536,9 +547,9 @@ async def run_inference(
     # include_explanation, con shape distinto (MLTopFeature) al de
     # generate_explanation() — mapeo de texto pendiente de diseño, no
     # resuelto en esta ronda. No activar sin resolver eso primero.
-    _update_task(5)
+    await _update_task(5)
     model = await asyncio.to_thread(load_model, model_version)
-    _update_task(15)
+    await _update_task(15)
 
     # 2. Obtener zonas inferibles
     zone_ids, df = await _get_inference_zones(db)
@@ -553,7 +564,7 @@ async def run_inference(
             })
             await db.commit()
         return {"zones_processed": 0, "high_priority": 0, "medium_priority": 0, "low_priority": 0}
-    _update_task(25, n)
+    await _update_task(25, n)
 
     # 3. Preparar features — la forma exacta depende del artefacto cargado
     estimator, X_readable, X_predict = _prepare_features(model, df)
@@ -565,7 +576,7 @@ async def run_inference(
         scores: np.ndarray = estimator.predict_proba(X_predict)[:, 1]
     else:
         scores = estimator.predict(X_predict)
-    _update_task(55, n)
+    await _update_task(55, n)
 
     # Leer umbrales desde settings si están disponibles
     try:
@@ -592,7 +603,7 @@ async def run_inference(
     except Exception as exc:
         logger.warning("SHAP no disponible (%s) — usando razón genérica.", exc)
         reasons = ["Sin explicación disponible."] * n
-    _update_task(80, n)
+    await _update_task(80, n)
 
     # 6. Resolver version_name desde model_versions (is_active=TRUE) o fallback
     active_row = (
@@ -623,7 +634,7 @@ async def run_inference(
         for i in range(n)
     ]
     await _bulk_update_section_c(db, params)
-    _update_task(100, n)
+    await _update_task(100, n)
 
     result = {
         "zones_processed": n,
@@ -643,6 +654,47 @@ async def run_inference(
     return result
 
 
+async def create_inference_task(db: AsyncSession, task_id: str) -> None:
+    """Crea la fila inicial de una tarea de inferencia (status='running')."""
+    db.add(InferenceTask(task_id=task_id, status="running", progress_pct=0, zones_processed=0))
+    await db.commit()
+
+
+async def _finish_inference_task(
+    db: AsyncSession,
+    task_id: str,
+    *,
+    task_status: str,
+    progress_pct: int,
+    zones_processed: int,
+    result: dict | None = None,
+    error: str | None = None,
+) -> None:
+    if error is not None:
+        result_json = json.dumps({"error": error})
+    elif result is not None:
+        result_json = json.dumps({
+            "high_priority": result.get("high_priority"),
+            "medium_priority": result.get("medium_priority"),
+            "low_priority": result.get("low_priority"),
+        })
+    else:
+        result_json = None
+
+    await db.execute(
+        update(InferenceTask)
+        .where(InferenceTask.task_id == task_id)
+        .values(
+            status=task_status,
+            progress_pct=progress_pct,
+            zones_processed=zones_processed,
+            result_json=result_json,
+            updated_at=datetime.utcnow(),
+        )
+    )
+    await db.commit()
+
+
 async def _run_inference_bg(
     task_id: str, model_version: str, threshold: float, user_id: int | None = None
 ) -> None:
@@ -654,27 +706,66 @@ async def _run_inference_bg(
                 db, model_version=model_version, threshold=threshold,
                 task_id=task_id, user_id=user_id,
             )
-        _inference_tasks[task_id] = {"status": "done", "progress_pct": 100, **result}
+            await _finish_inference_task(
+                db, task_id, task_status="done", progress_pct=100,
+                zones_processed=result.get("zones_processed", 0), result=result,
+            )
     except ModelNotAvailableError as exc:
-        _inference_tasks[task_id] = {
-            "status": "error", "progress_pct": 0, "zones_processed": 0,
-            "error": str(exc),
-        }
+        async with AsyncSessionLocal() as db:
+            await _finish_inference_task(
+                db, task_id, task_status="error", progress_pct=0,
+                zones_processed=0, error=str(exc),
+            )
     except Exception as exc:
         logger.exception("Inferencia fallida (task=%s)", task_id)
-        _inference_tasks[task_id] = {
-            "status": "error", "progress_pct": 0, "zones_processed": 0,
-            "error": str(exc),
-        }
+        async with AsyncSessionLocal() as db:
+            await _finish_inference_task(
+                db, task_id, task_status="error", progress_pct=0,
+                zones_processed=0, error=str(exc),
+            )
 
 
-def get_inference_status(task_id: str) -> dict:
-    if task_id not in _inference_tasks:
+async def get_inference_status(db: AsyncSession, task_id: str) -> dict:
+    task = await db.get(InferenceTask, task_id)
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "TASK_NOT_FOUND", "message": f"No existe tarea con id '{task_id}'."},
         )
-    return _inference_tasks[task_id]
+
+    if task.status == "running" and (
+        datetime.utcnow() - task.updated_at > timedelta(minutes=ORPHAN_TASK_TIMEOUT_MINUTES)
+    ):
+        task.status = "error"
+        task.result_json = json.dumps({
+            "error": "Tarea interrumpida: sin actualizaciones de progreso por más de "
+                     f"{ORPHAN_TASK_TIMEOUT_MINUTES} minutos (probable reinicio del servidor)."
+        })
+        task.updated_at = datetime.utcnow()
+        await db.commit()
+
+    response: dict[str, Any] = {
+        "status": task.status,
+        "progress_pct": task.progress_pct,
+        "zones_processed": task.zones_processed,
+    }
+    if task.result_json:
+        response.update(json.loads(task.result_json))
+    return response
+
+
+async def delete_old_inference_tasks(db: AsyncSession, older_than_days: int = 30) -> int:
+    """Borra tareas de inferencia terminadas (done/error) más viejas que older_than_days.
+    No se ejecuta automáticamente -- ver scripts/cleanup_inference_tasks.py."""
+    cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+    result = await db.execute(
+        delete(InferenceTask).where(
+            InferenceTask.status.in_(["done", "error"]),
+            InferenceTask.updated_at < cutoff,
+        )
+    )
+    await db.commit()
+    return result.rowcount
 
 
 # ── Recomendaciones GeoJSON ───────────────────────────────────────────────────

@@ -8,3 +8,4 @@ from app.models.dataset import Dataset
 from app.models.audit_log import AuditLog
 from app.models.model_version import ModelVersion
 from app.models.alert import Alert
+from app.models.inference_task import InferenceTask
