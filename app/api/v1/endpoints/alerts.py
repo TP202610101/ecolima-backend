@@ -5,7 +5,7 @@ from app.core.config import Settings
 from app.core.dependencies import require_role
 from app.db.session import get_session
 from app.models.user import User
-from app.services.alert_service import check_saturation_alerts, get_active_alerts
+from app.services.alert_service import check_coverage_redundancy, get_active_alerts
 
 router = APIRouter()
 
@@ -23,16 +23,20 @@ def _smtp_settings() -> dict | None:
     return None
 
 
-@router.post("/check-saturation")
-async def alerts_check_saturation(
+@router.post("/check-coverage-redundancy")
+async def alerts_check_coverage_redundancy(
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — verifica saturación y registra alertas si algún distrito supera 80%.
-    Llama automáticamente tras run-inference. Envía email si SMTP configurado."""
+    """admin — verifica redundancia de cobertura (qué % de zonas recomendadas
+    por el modelo ya tienen un punto real cerca -- NO es llenado de
+    contenedores, ver geo_service.get_coverage_redundancy_data) y registra
+    alertas si algún distrito supera 80%. Es un paso MANUAL del panel admin
+    -- no se dispara solo tras run-inference, hay que llamarlo aparte.
+    Envía email si SMTP configurado."""
     smtp = _smtp_settings()
     admin_email = _settings.admin_email if smtp else None
-    new_alerts = await check_saturation_alerts(db, admin_email=admin_email, smtp_settings=smtp)
+    new_alerts = await check_coverage_redundancy(db, admin_email=admin_email, smtp_settings=smtp)
     return {
         "new_alerts": len(new_alerts),
         "districts_flagged": [a["district_name"] for a in new_alerts],

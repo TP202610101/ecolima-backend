@@ -14,7 +14,7 @@ from app.services.geo_service import (
     get_heatmap_geojson,
     get_nearby_points_geojson,
     get_point_by_id_geojson,
-    get_saturation_data,
+    get_coverage_redundancy_data,
 )
 
 router = APIRouter()
@@ -125,11 +125,17 @@ async def map_heatmap(
     return JSONResponse(content=data, media_type=_GEO)
 
 
-@router.get("/saturation")
-async def map_saturation(
+@router.get("/coverage-redundancy")
+async def map_coverage_redundancy(
     _: User = Depends(require_role("admin", "analista")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin, analista — semáforo de saturación por distrito.
-    status: verde 0-50%, amarillo 51-80%, rojo >80%."""
-    return await get_saturation_data(db)
+    """admin, analista — semáforo de redundancia de cobertura por distrito:
+    qué % de zonas que el modelo recomienda para un punto NUEVO ya tienen un
+    punto real cerca (NO es llenado de contenedores -- ver
+    geo_service.get_coverage_redundancy_data). status: verde 0-50% (baja
+    redundancia, recomendaciones mayormente en zonas sin cobertura),
+    amarillo 51-80%, rojo >80% (alta redundancia). Incluye is_demo por
+    distrito: True si los datos contabilizados vienen de zonas sembradas
+    (v1.0-demo), no de inferencia real."""
+    return await get_coverage_redundancy_data(db)
