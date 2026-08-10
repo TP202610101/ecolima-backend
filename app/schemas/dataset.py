@@ -26,6 +26,10 @@ class DatasetValidationResponse(BaseModel):
     valid: bool
     missing_columns: list[str]
     type_errors: list[dict]
+    # Advertencia, NO bloquea 'valid' -- filas con las mismas coordenadas
+    # exactas dentro del mismo archivo. El usuario decide si son puntos
+    # legítimos o un error de carga.
+    duplicate_rows: list[dict] = []
     row_count: int
     valid_rows: int
     error_rows: int
