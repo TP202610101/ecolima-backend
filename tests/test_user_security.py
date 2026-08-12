@@ -1,6 +1,6 @@
 """
 tests/test_user_security.py
-Tres mejoras de seguridad en admin/users:
+Cuatro mejoras de seguridad en admin/users:
   A. No se puede dejar el sistema sin ningún admin activo (desactivar o
      degradar al último admin activo se rechaza con 409 LAST_ADMIN).
   B. Política de contraseña reforzada (min 8, mayúscula, minúscula, número)
@@ -8,12 +8,17 @@ Tres mejoras de seguridad en admin/users:
   C. Un admin no puede modificar rol/estado de OTRO admin (403
      ADMIN_IMMUTABLE) -- solo gestiona analistas. Revocar un admin real
      requiere acción manual en la BD (decisión de diseño).
+  D. No se puede promover a admin una cuenta desactivada (409
+     INACTIVE_CANNOT_PROMOTE) -- evita el admin-fantasma: admin + inactivo,
+     atrapado porque ADMIN_IMMUTABLE bloquearía a cualquier otro admin que
+     intente reactivarlo.
 
-Orden de evaluación en update_user_role/set_user_active:
-  1. ADMIN_IMMUTABLE (¿el objetivo es OTRO admin?) -- excepto sobre sí mismo.
-  2. LAST_ADMIN (¿la operación deja el sistema sin admins activos?) -- el
-     único caso en que un admin objetivo llega hasta acá es actuando sobre
-     sí mismo (la excepción de ADMIN_IMMUTABLE).
+Orden de evaluación en update_user_role: ADMIN_IMMUTABLE ->
+INACTIVE_CANNOT_PROMOTE -> LAST_ADMIN. No se solapan en la práctica:
+ADMIN_IMMUTABLE exige que el objetivo YA sea admin; INACTIVE_CANNOT_PROMOTE
+exige new_role=='admin' (ascenso); LAST_ADMIN exige new_role!='admin'
+(descenso) -- universos disjuntos. En set_user_active solo aplican
+ADMIN_IMMUTABLE y LAST_ADMIN (D es exclusivo del cambio de rol).
 
 No tocan Neon de forma permanente: los usuarios de prueba se borran en el
 teardown; el/los admin(s) reales que se desactivan temporalmente para simular
@@ -229,6 +234,37 @@ async def test_admin_can_promote_analista_to_admin_without_restriction(
         )
         assert resp.status_code == 200
         assert resp.json()["role"] == "admin"
+    finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+# ── Tarea D: no promover a admin una cuenta desactivada (admin-fantasma) ────
+
+async def test_promote_deactivated_analista_to_admin_is_rejected(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    """Evita el admin-fantasma: promover una cuenta inactiva a admin la
+    dejaría atrapada (admin + inactiva, y ADMIN_IMMUTABLE bloquearía a
+    cualquier otro admin que intente reactivarla)."""
+    email = "pytest_promote_inactive@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "analista")
+
+        deactivate_resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/status",
+            json={"is_active": False},
+            headers=auth_headers(admin_token),
+        )
+        assert deactivate_resp.status_code == 200
+
+        promote_resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/role",
+            json={"role": "admin"},
+            headers=auth_headers(admin_token),
+        )
+        assert promote_resp.status_code == 409
+        assert promote_resp.json()["detail"]["code"] == "INACTIVE_CANNOT_PROMOTE"
     finally:
         await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
         await db_session.commit()

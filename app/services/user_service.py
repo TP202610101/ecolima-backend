@@ -13,6 +13,10 @@ _ADMIN_IMMUTABLE_ERROR_DETAIL = {
     "code": "ADMIN_IMMUTABLE",
     "message": "No puedes modificar a otro administrador.",
 }
+_INACTIVE_CANNOT_PROMOTE_ERROR_DETAIL = {
+    "code": "INACTIVE_CANNOT_PROMOTE",
+    "message": "Activa la cuenta antes de promoverla a administrador.",
+}
 
 
 def _reject_if_other_admin(user: User, acting_user_id: int) -> None:
@@ -72,7 +76,18 @@ async def update_user_role(
     user = await User.get_by_id(db, user_id)
     if not user:
         return None
+    # Orden: ADMIN_IMMUTABLE -> INACTIVE_CANNOT_PROMOTE -> LAST_ADMIN. No se
+    # solapan en la práctica: ADMIN_IMMUTABLE exige que el objetivo YA sea
+    # admin; INACTIVE_CANNOT_PROMOTE exige new_role=='admin' (ascenso, el
+    # objetivo normalmente es un analista, no un admin); LAST_ADMIN exige
+    # new_role!='admin' (descenso). Evita el admin-fantasma: promover a admin
+    # una cuenta inactiva la dejaría atrapada (admin + inactiva no se puede
+    # reactivar, porque ADMIN_IMMUTABLE bloquearía a cualquier otro admin).
     _reject_if_other_admin(user, acting_user_id)
+    if new_role == "admin" and not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=_INACTIVE_CANNOT_PROMOTE_ERROR_DETAIL
+        )
     if new_role != "admin" and await _is_last_active_admin(db, user):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LAST_ADMIN_ERROR_DETAIL)
     user.role = new_role
