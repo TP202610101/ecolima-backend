@@ -1,10 +1,19 @@
 """
 tests/test_user_security.py
-Dos mejoras de seguridad en admin/users:
+Tres mejoras de seguridad en admin/users:
   A. No se puede dejar el sistema sin ningún admin activo (desactivar o
-     degradar al último admin se rechaza con 409 LAST_ADMIN).
+     degradar al último admin activo se rechaza con 409 LAST_ADMIN).
   B. Política de contraseña reforzada (min 8, mayúscula, minúscula, número)
      en la creación de usuarios -- 422 WEAK_PASSWORD si no cumple.
+  C. Un admin no puede modificar rol/estado de OTRO admin (403
+     ADMIN_IMMUTABLE) -- solo gestiona analistas. Revocar un admin real
+     requiere acción manual en la BD (decisión de diseño).
+
+Orden de evaluación en update_user_role/set_user_active:
+  1. ADMIN_IMMUTABLE (¿el objetivo es OTRO admin?) -- excepto sobre sí mismo.
+  2. LAST_ADMIN (¿la operación deja el sistema sin admins activos?) -- el
+     único caso en que un admin objetivo llega hasta acá es actuando sobre
+     sí mismo (la excepción de ADMIN_IMMUTABLE).
 
 No tocan Neon de forma permanente: los usuarios de prueba se borran en el
 teardown; el/los admin(s) reales que se desactivan temporalmente para simular
@@ -34,7 +43,9 @@ async def _create_user(client: AsyncClient, admin_token: str, email: str, role: 
     return resp.json()["user_id"]
 
 
-# ── Tarea A: no quedarse sin admins ─────────────────────────────────────────
+# ── Tarea A: no quedarse sin admins (probado como auto-modificación, el único
+#    camino que llega a LAST_ADMIN ahora que ADMIN_IMMUTABLE existe -- ver
+#    Tarea C) ──────────────────────────────────────────────────────────────
 
 async def test_deactivate_only_active_admin_is_rejected(
     client: AsyncClient, admin_token: str, db_session: AsyncSession
@@ -42,9 +53,10 @@ async def test_deactivate_only_active_admin_is_rejected(
     """Deja a un admin de prueba como el ÚNICO admin activo (desactivando
     temporalmente cualquier otro admin real por SQL directo -- nunca por la
     API, para no invalidar el token que este mismo test sigue usando), y
-    confirma que desactivarlo se rechaza. Llama al service directamente
-    (no HTTP) para el intento bloqueado, así el token de admin_token nunca
-    se ve afectado por el estado que estamos manipulando."""
+    confirma que desactivarse a SÍ MISMO se rechaza por LAST_ADMIN. Actúa
+    como sí mismo (acting_user_id == target_id) porque ADMIN_IMMUTABLE ya
+    bloquearía cualquier intento de un admin sobre OTRO admin antes de
+    llegar a este chequeo (ver Tarea C)."""
     email = "pytest_last_admin_deactivate@example.com"
     other_ids: list[int] = []
     try:
@@ -60,7 +72,7 @@ async def test_deactivate_only_active_admin_is_rejected(
         await db_session.commit()
 
         with pytest.raises(HTTPException) as exc_info:
-            await user_service.set_user_active(db_session, target_id, False)
+            await user_service.set_user_active(db_session, target_id, False, target_id)
         assert exc_info.value.status_code == 409
         assert exc_info.value.detail["code"] == "LAST_ADMIN"
     finally:
@@ -75,8 +87,8 @@ async def test_deactivate_only_active_admin_is_rejected(
 async def test_demote_only_active_admin_is_rejected(
     client: AsyncClient, admin_token: str, db_session: AsyncSession
 ):
-    """Mismo escenario que arriba pero degradando el rol (admin -> analista)
-    en vez de desactivar."""
+    """Mismo escenario que arriba pero degradando el propio rol (admin ->
+    analista) en vez de desactivar."""
     email = "pytest_last_admin_demote@example.com"
     other_ids: list[int] = []
     try:
@@ -92,7 +104,7 @@ async def test_demote_only_active_admin_is_rejected(
         await db_session.commit()
 
         with pytest.raises(HTTPException) as exc_info:
-            await user_service.update_user_role(db_session, target_id, "analista")
+            await user_service.update_user_role(db_session, target_id, "analista", target_id)
         assert exc_info.value.status_code == 409
         assert exc_info.value.detail["code"] == "LAST_ADMIN"
     finally:
@@ -100,46 +112,6 @@ async def test_demote_only_active_admin_is_rejected(
             await db_session.execute(text("UPDATE users SET is_active = true WHERE user_id = :id"), {"id": uid})
         if other_ids:
             await db_session.commit()
-        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
-        await db_session.commit()
-
-
-async def test_deactivate_admin_allowed_when_other_admins_remain_active(
-    client: AsyncClient, admin_token: str, db_session: AsyncSession
-):
-    """Con el admin seed + este segundo admin ambos activos, desactivar el
-    segundo debe funcionar normal (no es el último)."""
-    email = "pytest_not_last_admin_deactivate@example.com"
-    try:
-        target_id = await _create_user(client, admin_token, email, "admin")
-
-        resp = await client.patch(
-            f"/api/v1/admin/users/{target_id}/status",
-            json={"is_active": False},
-            headers=auth_headers(admin_token),
-        )
-        assert resp.status_code == 200
-        assert resp.json()["is_active"] is False
-    finally:
-        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
-        await db_session.commit()
-
-
-async def test_demote_admin_allowed_when_other_admins_remain_active(
-    client: AsyncClient, admin_token: str, db_session: AsyncSession
-):
-    email = "pytest_not_last_admin_demote@example.com"
-    try:
-        target_id = await _create_user(client, admin_token, email, "admin")
-
-        resp = await client.patch(
-            f"/api/v1/admin/users/{target_id}/role",
-            json={"role": "analista"},
-            headers=auth_headers(admin_token),
-        )
-        assert resp.status_code == 200
-        assert resp.json()["role"] == "analista"
-    finally:
         await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
         await db_session.commit()
 
@@ -175,6 +147,106 @@ async def test_create_user_accepts_valid_password(
             headers=auth_headers(admin_token),
         )
         assert resp.status_code == 201
+    finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+# ── Tarea C: un admin no puede modificar a OTRO admin ───────────────────────
+
+async def test_admin_cannot_demote_another_admin(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    email = "pytest_admin_immutable_role@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "admin")
+
+        resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/role",
+            json={"role": "analista"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "ADMIN_IMMUTABLE"
+    finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+async def test_admin_cannot_deactivate_another_admin(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    email = "pytest_admin_immutable_status@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "admin")
+
+        resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/status",
+            json={"is_active": False},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "ADMIN_IMMUTABLE"
+    finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+async def test_admin_can_deactivate_analista_without_restriction(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    """La gestión de analistas no cambia -- sin restricciones nuevas."""
+    email = "pytest_analista_deactivate@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "analista")
+
+        resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/status",
+            json={"is_active": False},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["is_active"] is False
+    finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+async def test_admin_can_promote_analista_to_admin_without_restriction(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    """ADMIN_IMMUTABLE mira el rol ACTUAL del objetivo (antes del cambio) --
+    promover a un analista a admin no es "modificar a otro admin", así que
+    sigue permitido."""
+    email = "pytest_analista_promote@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "analista")
+
+        resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/role",
+            json={"role": "admin"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+    finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+async def test_create_new_admin_still_allowed(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    """La regla es sobre MODIFICAR admins existentes, no sobre crearlos."""
+    email = "pytest_create_admin_allowed@example.com"
+    try:
+        resp = await client.post(
+            "/api/v1/admin/users",
+            json={"email": email, "password": _VALID_PASSWORD, "role": "admin"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["role"] == "admin"
     finally:
         await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
         await db_session.commit()
