@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import text
@@ -11,14 +9,13 @@ from main import app
 from app.core.config import Settings
 from app.core.limiter import limiter
 from app.db.session import get_session
+from app.services.dataset_service import delete_dataset_file
 
 # Prefijo obligatorio para cualquier archivo subido por un test. Permite
 # identificar y limpiar datasets de prueba, incluidos huérfanos dejados por
 # corridas anteriores interrumpidas (crash, Ctrl+C) que no llegaron a hacer
 # teardown.
 TEST_FILE_PREFIX = "pytest_test_"
-
-UPLOAD_DIR = Path("uploads/datasets")
 
 
 def _make_test_session_factory():
@@ -30,9 +27,8 @@ def _make_test_session_factory():
 
 
 async def _delete_dataset(session: AsyncSession, dataset_id: int) -> None:
-    """Borra el archivo en disco (si existe) y el registro en `datasets`."""
-    for path in UPLOAD_DIR.glob(f"{dataset_id}.*"):
-        path.unlink(missing_ok=True)
+    """Borra el archivo (Blob o disco local, según configuración) y el registro en `datasets`."""
+    delete_dataset_file(dataset_id)
     await session.execute(text("DELETE FROM datasets WHERE dataset_id = :id"), {"id": dataset_id})
 
 

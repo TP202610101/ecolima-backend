@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from app.api.v1.endpoints import alerts, auth, datasets, public
 from app.api.v1.endpoints import map as map_
 from app.api.v1.endpoints import ml, ml_service, geo, users
+from app.core.config import Settings
 from app.core.limiter import limiter
 from app.db.session import AsyncSessionLocal
 from app.models.model_version import ModelVersion
@@ -26,12 +27,18 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
+_settings = Settings()
+_cors_origins = _settings.get_cors_origins()
+logger.info(
+    "CORS: usando %s (%d origen(es)): %s",
+    "CORS_ALLOWED_ORIGINS" if _settings.cors_allowed_origins else "el default hardcodeado (CORS_ALLOWED_ORIGINS no está seteada)",
+    len(_cors_origins),
+    _cors_origins,
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://mango-cliff-03aa6110f.7.azurestaticapps.net",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

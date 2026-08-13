@@ -8,26 +8,28 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import Alert
-from app.services.geo_service import get_saturation_data
+from app.services.geo_service import get_coverage_redundancy_data
 
 logger = logging.getLogger(__name__)
 
 
-async def check_saturation_alerts(
+async def check_coverage_redundancy(
     db: AsyncSession,
     admin_email: str | None = None,
     smtp_settings: dict | None = None,
 ) -> list[dict]:
     """
-    Verifica saturación por distrito y crea alertas para los que superen 80%.
+    Verifica redundancia de cobertura por distrito (ver
+    geo_service.get_coverage_redundancy_data para la definición exacta -- NO
+    es llenado de contenedores) y crea alertas para los que superen 80%.
     Evita duplicados: no crea alerta si ya existe una activa para ese distrito.
     Envía email al admin si SMTP está configurado.
     """
-    saturation = await get_saturation_data(db)
+    redundancy = await get_coverage_redundancy_data(db)
     new_alerts: list[dict] = []
 
-    for district in saturation:
-        if district["saturation_pct"] <= 80:
+    for district in redundancy:
+        if district["redundancy_pct"] <= 80:
             continue
 
         existing = (await db.execute(
@@ -40,7 +42,7 @@ async def check_saturation_alerts(
         if existing is None:
             alert = Alert(
                 district_id=district["district_id"],
-                saturation_pct=district["saturation_pct"],
+                redundancy_pct=district["redundancy_pct"],
                 status="active",
                 created_at=datetime.utcnow(),
             )
@@ -50,8 +52,8 @@ async def check_saturation_alerts(
     if new_alerts:
         await db.commit()
         if admin_email and smtp_settings:
-            await _send_saturation_email(admin_email, smtp_settings, new_alerts)
-        logger.info("Saturation alerts created for %d district(s)", len(new_alerts))
+            await _send_coverage_redundancy_email(admin_email, smtp_settings, new_alerts)
+        logger.info("Coverage redundancy alerts created for %d district(s)", len(new_alerts))
 
     return new_alerts
 
@@ -63,7 +65,7 @@ async def get_active_alerts(db: AsyncSession) -> list[dict]:
             a.alert_id,
             a.district_id,
             d.district_name,
-            a.saturation_pct,
+            a.redundancy_pct,
             a.status,
             a.created_at
         FROM alerts a
@@ -77,7 +79,7 @@ async def get_active_alerts(db: AsyncSession) -> list[dict]:
             "alert_id": row[0],
             "district_id": row[1],
             "district_name": row[2],
-            "saturation_pct": float(row[3]),
+            "redundancy_pct": float(row[3]),
             "status": row[4],
             "created_at": row[5].isoformat() if row[5] else None,
         }
@@ -85,18 +87,18 @@ async def get_active_alerts(db: AsyncSession) -> list[dict]:
     ]
 
 
-async def _send_saturation_email(
+async def _send_coverage_redundancy_email(
     admin_email: str,
     smtp_settings: dict,
     districts: list[dict],
 ) -> None:
-    lines = ["Alerta de saturación de puntos de reciclaje en Lima:\n"]
+    lines = ["Alerta de redundancia de cobertura en Lima (recomendaciones ML donde ya hay un punto real cerca):\n"]
     for d in districts:
-        lines.append(f"  - {d['district_name']}: {d['saturation_pct']:.1f}% saturación (rojo)")
+        lines.append(f"  - {d['district_name']}: {d['redundancy_pct']:.1f}% redundancia (rojo)")
     lines.append("\nRevisa el dashboard EcoLima para más detalles.")
 
     msg = MIMEText("\n".join(lines), "plain", "utf-8")
-    msg["Subject"] = "[EcoLima] Alerta: saturación >80% detectada"
+    msg["Subject"] = "[EcoLima] Alerta: redundancia de cobertura >80% detectada"
     msg["From"] = smtp_settings.get("user", "ecolima@noreply.com")
     msg["To"] = admin_email
 
@@ -107,9 +109,9 @@ async def _send_saturation_email(
                 smtp.starttls()
                 smtp.login(smtp_settings["user"], smtp_settings["pass"])
                 smtp.send_message(msg)
-            logger.info("Saturation alert email sent to %s", admin_email)
+            logger.info("Coverage redundancy alert email sent to %s", admin_email)
         except Exception as exc:
-            logger.warning("Could not send saturation alert email: %s", exc)
+            logger.warning("Could not send coverage redundancy alert email: %s", exc)
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _send_sync)

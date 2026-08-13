@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import asyncpg
 from dotenv import load_dotenv
 
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, validate_password_strength
 
 load_dotenv()
 
@@ -31,6 +31,11 @@ if not PASSWORD:
         "explícitamente antes de correrlo.",
         file=sys.stderr,
     )
+    sys.exit(1)
+try:
+    validate_password_strength(PASSWORD)
+except ValueError as exc:
+    print(f"ERROR: ANALISTA_PASSWORD no cumple la política mínima: {exc}", file=sys.stderr)
     sys.exit(1)
 FULL_NAME = "Ana Analista"
 ROLE = "analista"

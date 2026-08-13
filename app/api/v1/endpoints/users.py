@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_role
+from app.core.security import validate_password_strength
 from app.db.session import get_session
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserRoleUpdate, UserStatusUpdate
@@ -37,6 +38,14 @@ async def create_user(
     if user_in.role not in ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_ROLE_ERROR_DETAIL)
 
+    try:
+        validate_password_strength(user_in.password)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "WEAK_PASSWORD", "message": str(exc)},
+        )
+
     if await User.get_by_email(db, user_in.email):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El email ya existe")
 
@@ -59,7 +68,7 @@ async def update_user_role(
     if payload.role not in ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_ROLE_ERROR_DETAIL)
 
-    user = await user_service.update_user_role(db, user_id, payload.role)
+    user = await user_service.update_user_role(db, user_id, payload.role, current_user.user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     return user
@@ -76,7 +85,7 @@ async def update_user_status(
     inmediato cualquier token ya emitido (bump de token_version) -- antes no
     existía forma de revocar acceso de una cuenta comprometida salvo un
     script directo contra la BD. Ver auditoria-seguridad-backend.md I4."""
-    user = await user_service.set_user_active(db, user_id, payload.is_active)
+    user = await user_service.set_user_active(db, user_id, payload.is_active, current_user.user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     return user

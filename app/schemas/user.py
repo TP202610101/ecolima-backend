@@ -1,10 +1,15 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr
 from datetime import datetime
 
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    # Política completa (min 8, mayúscula, minúscula, número) se valida en el
+    # endpoint vía validate_password_strength -- no aquí, para que TODAS las
+    # violaciones (incluida longitud) devuelvan el mismo código WEAK_PASSWORD
+    # en vez de mezclar el formato de error genérico de Pydantic con el
+    # formato {code, message} que usa el resto de la API.
+    password: str
     full_name: str | None = None
     role: str = "analista"
 

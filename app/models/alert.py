@@ -8,7 +8,10 @@ class Alert(Base):
 
     alert_id = Column(Integer, primary_key=True, autoincrement=True)
     district_id = Column(Integer, ForeignKey("districts.district_id"), nullable=False, index=True)
-    saturation_pct = Column(Float, nullable=False)
+    # % de zonas recomendadas por el modelo que YA tienen un punto de reciclaje
+    # real a <=500m (redundancia entre recomendación y cobertura existente).
+    # NO mide llenado físico de contenedores -- no hay ese dato en el sistema.
+    redundancy_pct = Column(Float, nullable=False)
     status = Column(String(10), nullable=False, default="active")  # active | resolved
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)

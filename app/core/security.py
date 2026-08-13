@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -7,6 +8,26 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 settings = Settings()
 
 ALGORITHM = "HS256"
+
+
+def validate_password_strength(password: str) -> None:
+    """Levanta ValueError si la contraseña no cumple la política mínima:
+    >=8 caracteres, al menos una mayúscula, una minúscula y un número.
+    Símbolos NO son obligatorios. Única fuente de verdad de la política --
+    usada tanto por POST /admin/users como por los scripts de seed/reset
+    (seed_admin.py, reset_admin.py, create_analista.py) para que un
+    ADMIN_PASSWORD/ANALISTA_PASSWORD débil en el entorno también falle."""
+    missing = []
+    if len(password) < 8:
+        missing.append("al menos 8 caracteres")
+    if not re.search(r"[A-Z]", password):
+        missing.append("al menos una mayúscula")
+    if not re.search(r"[a-z]", password):
+        missing.append("al menos una minúscula")
+    if not re.search(r"[0-9]", password):
+        missing.append("al menos un número")
+    if missing:
+        raise ValueError("La contraseña debe tener " + ", ".join(missing) + ".")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

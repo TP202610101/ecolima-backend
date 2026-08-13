@@ -13,12 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit_log import AuditLog
 from app.models.dataset import Dataset
 from app.models.recycling_point import RecyclingPoint
+from app.services.blob_storage import is_configured, get_container_client
 
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 UPLOAD_DIR = Path("uploads/datasets")
 REQUIRED_COLUMNS = ["latitude", "longitude", "district_id", "source"]
 OPTIONAL_COLUMNS = ["point_type", "address", "operator", "materials_accepted", "verified"]
+
+# Bounding box plano de Lima Metropolitana -- usado por /validate, la edición
+# de celdas, Y por el commit (defensa en profundidad: el commit ya no confía
+# únicamente en que /validate se haya corrido antes).
+LAT_RANGE = (-13.0, -11.5)
+LON_RANGE = (-77.5, -76.5)
 
 
 def _get_file_extension(filename: str) -> str:
@@ -62,6 +69,20 @@ def _read_csv_bytes(raw_bytes: bytes) -> pd.DataFrame:
     )
 
 
+def _blob_key(dataset_id: int, ext: str) -> str:
+    return f"{dataset_id}{ext}"
+
+
+def _datasets_container():
+    """Cliente del contenedor de datasets, o None si Blob no está configurado
+    (placeholder o variable ausente) -- en ese caso el llamador cae a disco local."""
+    from app.core.config import Settings
+    settings = Settings()
+    if not is_configured(settings.azure_blob_connection_string):
+        return None
+    return get_container_client(settings.azure_blob_connection_string, settings.azure_blob_container_datasets)
+
+
 def _get_dataset_file_path(dataset_id: int) -> Path | None:
     for ext in ALLOWED_EXTENSIONS:
         candidate = UPLOAD_DIR / f"{dataset_id}{ext}"
@@ -70,16 +91,46 @@ def _get_dataset_file_path(dataset_id: int) -> Path | None:
     return None
 
 
-def _save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> Path:
+def _get_dataset_blob(dataset_id: int, container):
+    """Devuelve el blob_client del primer archivo existente del dataset, o None."""
+    for ext in ALLOWED_EXTENSIONS:
+        blob_client = container.get_blob_client(_blob_key(dataset_id, ext))
+        if blob_client.exists():
+            return blob_client
+    return None
+
+
+def _save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> str:
     ext = _get_file_extension(filename)
+    container = _datasets_container()
+    if container is not None:
+        key = _blob_key(dataset_id, ext)
+        container.upload_blob(name=key, data=raw_bytes, overwrite=True)
+        return key
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     path = UPLOAD_DIR / f"{dataset_id}{ext}"
     path.write_bytes(raw_bytes)
-    return path
+    return str(path)
 
 
-def save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> Path:
+def save_uploaded_dataset_file(dataset_id: int, filename: str, raw_bytes: bytes) -> str:
     return _save_uploaded_dataset_file(dataset_id, filename, raw_bytes)
+
+
+def delete_dataset_file(dataset_id: int) -> None:
+    """Borra el archivo del dataset -- del contenedor de Blob si está configurado,
+    o de disco local en su defecto. Usada por la eliminación de datasets y por
+    el fixture de limpieza de tests (cleanup_datasets)."""
+    container = _datasets_container()
+    if container is not None:
+        blob_client = _get_dataset_blob(dataset_id, container)
+        if blob_client is not None:
+            blob_client.delete_blob()
+        return
+
+    for ext in ALLOWED_EXTENSIONS:
+        (UPLOAD_DIR / f"{dataset_id}{ext}").unlink(missing_ok=True)
 
 
 async def read_dataset_file(upload_file: UploadFile) -> tuple[pd.DataFrame, int, bytes]:
@@ -106,7 +157,44 @@ async def read_dataset_file(upload_file: UploadFile) -> tuple[pd.DataFrame, int,
     return df, file_size, raw_bytes
 
 
+def _parse_dataset_bytes(raw_bytes: bytes, extension: str) -> pd.DataFrame:
+    try:
+        if extension == ".csv":
+            return _read_csv_bytes(raw_bytes)
+        return pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Error al leer el archivo: {exc}",
+        )
+
+
+def _serialize_dataset(df: pd.DataFrame, extension: str) -> bytes:
+    if extension == ".csv":
+        return df.to_csv(index=False, encoding="utf-8").encode("utf-8")
+    if extension == ".xlsx":
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False, engine="openpyxl")
+        return buffer.getvalue()
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Formato de archivo de dataset no soportado.",
+    )
+
+
 def _load_dataset_file(dataset_id: int) -> tuple[pd.DataFrame, int]:
+    container = _datasets_container()
+    if container is not None:
+        blob_client = _get_dataset_blob(dataset_id, container)
+        if blob_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Archivo del dataset no encontrado.",
+            )
+        raw_bytes = blob_client.download_blob().readall()
+        extension = Path(blob_client.blob_name).suffix.lower()
+        return _parse_dataset_bytes(raw_bytes, extension), len(raw_bytes)
+
     path = _get_dataset_file_path(dataset_id)
     if path is None:
         raise HTTPException(
@@ -115,20 +203,7 @@ def _load_dataset_file(dataset_id: int) -> tuple[pd.DataFrame, int]:
         )
 
     raw_bytes = path.read_bytes()
-    extension = path.suffix.lower()
-
-    try:
-        if extension == ".csv":
-            df = _read_csv_bytes(raw_bytes)
-        else:
-            df = pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Error al leer el archivo: {exc}",
-        )
-
-    return df, len(raw_bytes)
+    return _parse_dataset_bytes(raw_bytes, path.suffix.lower()), len(raw_bytes)
 
 
 def _coerce_bool(value) -> bool | None:
@@ -152,6 +227,12 @@ def _validate_columns(df: pd.DataFrame) -> list[str]:
     return missing
 
 
+def _is_blank(value) -> bool:
+    if pd.isna(value):
+        return True
+    return isinstance(value, str) and value.strip() == ""
+
+
 def _validate_types(df: pd.DataFrame) -> list[dict]:
     errors: list[dict] = []
     if df.empty:
@@ -161,8 +242,8 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
         row_index = int(index)
 
         for column, min_val, max_val in [
-            ("latitude", -13.0, -11.5),
-            ("longitude", -77.5, -76.5),
+            ("latitude", *LAT_RANGE),
+            ("longitude", *LON_RANGE),
         ]:
             if column not in df.columns:
                 continue
@@ -179,6 +260,13 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
             if not (min_val <= num_value <= max_val):
                 errors.append({"row_index": row_index, "column": column, "value": num_value, "error": f"Debe estar entre {min_val} y {max_val}."})
 
+        for column in ("district_id", "source"):
+            if column not in df.columns:
+                continue
+            value = row[column]
+            if _is_blank(value):
+                errors.append({"row_index": row_index, "column": column, "value": value, "error": "Valor faltante"})
+
         if "verified" in df.columns:
             value = row["verified"]
             if not pd.isna(value):
@@ -190,25 +278,51 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
     return errors
 
 
-def _write_dataset_file(dataset_id: int, df: pd.DataFrame) -> Path:
+def _find_duplicate_coordinate_rows(df: pd.DataFrame) -> list[dict]:
+    """Filas con exactamente las mismas coordenadas (lat, lon) dentro del
+    mismo archivo. Es ADVERTENCIA, no bloquea 'valid' -- el usuario decide si
+    son puntos legítimamente pegados o un error de carga."""
+    if df.empty or "latitude" not in df.columns or "longitude" not in df.columns:
+        return []
+
+    groups: dict[tuple[float, float], list[int]] = {}
+    for index, row in df.iterrows():
+        lat, lon = row.get("latitude"), row.get("longitude")
+        if pd.isna(lat) or pd.isna(lon):
+            continue
+        try:
+            key = (round(float(lat), 6), round(float(lon), 6))
+        except (TypeError, ValueError):
+            continue
+        groups.setdefault(key, []).append(int(index))
+
+    return [
+        {"latitude": lat, "longitude": lon, "row_indices": indices}
+        for (lat, lon), indices in groups.items()
+        if len(indices) > 1
+    ]
+
+
+def _write_dataset_file(dataset_id: int, df: pd.DataFrame) -> None:
+    container = _datasets_container()
+    if container is not None:
+        blob_client = _get_dataset_blob(dataset_id, container)
+        if blob_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Archivo del dataset no encontrado.",
+            )
+        extension = Path(blob_client.blob_name).suffix.lower()
+        blob_client.upload_blob(_serialize_dataset(df, extension), overwrite=True)
+        return
+
     path = _get_dataset_file_path(dataset_id)
     if path is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Archivo del dataset no encontrado.",
         )
-
-    if path.suffix.lower() == ".csv":
-        df.to_csv(path, index=False, encoding="utf-8")
-    elif path.suffix.lower() == ".xlsx":
-        df.to_excel(path, index=False, engine="openpyxl")
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Formato de archivo de dataset no soportado.",
-        )
-
-    return path
+    path.write_bytes(_serialize_dataset(df, path.suffix.lower()))
 
 
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -234,16 +348,16 @@ def _validate_edit_value(column: str, value: Any) -> Any:
         if value is None or pd.isna(value):
             raise ValueError("latitude no puede ser nulo")
         latitude = float(value)
-        if not (-13.0 <= latitude <= -11.5):
-            raise ValueError("latitude debe estar entre -13.0 y -11.5")
+        if not (LAT_RANGE[0] <= latitude <= LAT_RANGE[1]):
+            raise ValueError(f"latitude debe estar entre {LAT_RANGE[0]} y {LAT_RANGE[1]}")
         return latitude
 
     if column == "longitude":
         if value is None or pd.isna(value):
             raise ValueError("longitude no puede ser nulo")
         longitude = float(value)
-        if not (-77.5 <= longitude <= -76.5):
-            raise ValueError("longitude debe estar entre -77.5 y -76.5")
+        if not (LON_RANGE[0] <= longitude <= LON_RANGE[1]):
+            raise ValueError(f"longitude debe estar entre {LON_RANGE[0]} y {LON_RANGE[1]}")
         return longitude
 
     if column == "district_id":
@@ -282,6 +396,22 @@ async def _persist_dataset_changes(db: AsyncSession, dataset: Dataset, row_count
     await db.refresh(dataset)
 
 
+def _reject_if_committed(dataset: Dataset) -> None:
+    """Un dataset 'committed' es inmutable: editarlo/borrar filas después de
+    comprometido reseteaba status a 'pending' y anulaba el guard
+    ALREADY_COMMITTED de commit_dataset, permitiendo re-comprometer y crear
+    puntos duplicados/huérfanos en recycling_points (ver auditoria-flujo-datasets.md)."""
+    if dataset.status == "committed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "DATASET_COMMITTED",
+                "message": "El dataset ya fue comprometido y es inmutable. "
+                           "No se puede editar ni borrar filas de un dataset 'committed'.",
+            },
+        )
+
+
 async def delete_dataset_rows(
     db: AsyncSession,
     dataset_id: int,
@@ -299,6 +429,7 @@ async def delete_dataset_rows(
     dataset = await get_dataset_by_id(db, dataset_id)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+    _reject_if_committed(dataset)
 
     df, _ = _load_dataset_file(dataset_id)
     invalid_indices = [idx for idx in row_indices if idx not in list(df.index)]
@@ -337,6 +468,7 @@ async def delete_incomplete_rows(db: AsyncSession, dataset_id: int, user_id: int
     dataset = await get_dataset_by_id(db, dataset_id)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+    _reject_if_committed(dataset)
 
     df, _ = _load_dataset_file(dataset_id)
     required = ["latitude", "longitude", "district_id"]
@@ -377,6 +509,7 @@ async def edit_dataset_cells(
     dataset = await get_dataset_by_id(db, dataset_id)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+    _reject_if_committed(dataset)
 
     df, _ = _load_dataset_file(dataset_id)
     if df.empty:
@@ -475,9 +608,14 @@ async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
     df, _ = _load_dataset_file(dataset_id)
     missing_columns = _validate_columns(df)
     type_errors = []
+    duplicate_rows: list[dict] = []
     if not missing_columns:
         type_errors = _validate_types(df)
+        duplicate_rows = _find_duplicate_coordinate_rows(df)
 
+    # Los duplicados son ADVERTENCIA -- no cuentan para valid/error_rows. El
+    # usuario decide si son puntos legítimos o un error de carga (ver
+    # _find_duplicate_coordinate_rows).
     valid = not missing_columns and not type_errors
     error_summary = None
     if not valid:
@@ -501,6 +639,7 @@ async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
         "valid": valid,
         "missing_columns": missing_columns,
         "type_errors": type_errors,
+        "duplicate_rows": duplicate_rows,
         "row_count": len(df),
         "valid_rows": valid_rows,
         "error_rows": error_rows,
@@ -533,6 +672,16 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "ALREADY_COMMITTED", "message": "El dataset ya fue comprometido."},
+        )
+
+    if dataset.status != "valid":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "NOT_VALIDATED",
+                "message": f"El dataset debe validarse (GET /datasets/{dataset_id}/validate) y quedar en "
+                           f"estado 'valid' antes de comprometerse. Estado actual: '{dataset.status}'.",
+            },
         )
 
     df, _ = _load_dataset_file(dataset_id)
@@ -571,6 +720,17 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
             source = str(row["source"]).strip()
         except (TypeError, ValueError) as exc:
             errors.append({"row_index": row_index, "error": str(exc)})
+            continue
+
+        # Defensa en profundidad: repite el chequeo de rango que hace /validate.
+        # El gate de status=='valid' de arriba ya debería garantizar esto, pero
+        # no confiamos únicamente en eso -- una fila fuera de Lima nunca debe
+        # llegar a recycling_points.
+        if not (LAT_RANGE[0] <= latitude <= LAT_RANGE[1]):
+            errors.append({"row_index": row_index, "error": f"latitude fuera de rango ({LAT_RANGE[0]} a {LAT_RANGE[1]})"})
+            continue
+        if not (LON_RANGE[0] <= longitude <= LON_RANGE[1]):
+            errors.append({"row_index": row_index, "error": f"longitude fuera de rango ({LON_RANGE[0]} a {LON_RANGE[1]})"})
             continue
 
         if district_id not in valid_district_ids:

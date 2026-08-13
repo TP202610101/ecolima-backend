@@ -611,14 +611,35 @@ async def count_recycling_points_within_radius(db: AsyncSession, radius_m: int) 
     return {row.zone_id: row.point_count for row in rows}
 
 
-async def get_saturation_data(db: AsyncSession) -> list[dict]:
+async def get_coverage_redundancy_data(db: AsyncSession) -> list[dict]:
     """
-    Calcula el porcentaje de saturación por distrito.
+    Calcula, por distrito, qué porcentaje de las zonas que el modelo recomienda
+    para un punto NUEVO ya tienen un punto de reciclaje real cerca -- es decir,
+    redundancia entre la recomendación y la cobertura ya existente.
+
+    NO mide llenado físico de contenedores -- esa columna no existe en el
+    esquema. "redundancy_pct" alto significa "el modelo está recomendando
+    puntos donde ya hay cobertura" (posible desperdicio de la recomendación),
+    no "los contenedores están llenos".
+
     already_covered = zonas is_recommended=TRUE con existing_points_500m > 0
     (indica que ya hay al menos un punto real en 500m, independiente de is_suitable)
-    saturation_pct = already_covered / total_recommended × 100
-    Semáforo: verde 0-50%, amarillo 51-80%, rojo >80%
+    redundancy_pct = already_covered / total_recommended × 100
+    Semáforo (se mantiene el mismo umbral, resignificado):
+      verde 0-50%   = baja redundancia -- las recomendaciones son en su
+                      mayoría zonas SIN cobertura existente cerca.
+      amarillo 51-80%
+      rojo >80%     = alta redundancia -- la mayoría de zonas recomendadas
+                      YA tienen un punto real cerca.
+
+    is_demo: True si alguna de las zonas contabilizadas para ese distrito
+    viene de una versión de modelo "demo" (sembrada, no inferencia real) --
+    mismo criterio que get_recommendations_geojson/get_model_metrics en
+    ml_service.py. HOY (2026) el 100% de is_recommended=TRUE en producción es
+    dato demo, así que is_demo=True para todo distrito con datos.
     """
+    from app.services.ml_service import _is_demo_version
+
     rows = (await db.execute(text("""
         SELECT
             d.district_id,
@@ -627,6 +648,8 @@ async def get_saturation_data(db: AsyncSession) -> list[dict]:
                 AS total_recommended,
             COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE AND cz.existing_points_500m > 0)
                 AS already_covered,
+            ARRAY_AGG(DISTINCT cz.model_version) FILTER (WHERE cz.is_recommended = TRUE)
+                AS model_versions,
             CASE
                 WHEN COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE) = 0 THEN 0.0
                 ELSE ROUND(
@@ -635,28 +658,30 @@ async def get_saturation_data(db: AsyncSession) -> list[dict]:
                     / COUNT(cz.zone_id) FILTER (WHERE cz.is_recommended = TRUE),
                     2
                 )
-            END AS saturation_pct
+            END AS redundancy_pct
         FROM districts d
         LEFT JOIN candidate_zones cz ON cz.district_id = d.district_id
         GROUP BY d.district_id, d.district_name
-        ORDER BY saturation_pct DESC NULLS LAST, d.district_name
+        ORDER BY redundancy_pct DESC NULLS LAST, d.district_name
     """))).mappings().fetchall()
 
     result = []
     for row in rows:
-        pct = float(row["saturation_pct"])
+        pct = float(row["redundancy_pct"])
         if pct <= 50:
             traffic_light = "verde"
         elif pct <= 80:
             traffic_light = "amarillo"
         else:
             traffic_light = "rojo"
+        model_versions = row["model_versions"] or []
         result.append({
             "district_id": row["district_id"],
             "district_name": row["district_name"],
             "total_recommended": int(row["total_recommended"]),
             "already_covered": int(row["already_covered"]),
-            "saturation_pct": pct,
+            "redundancy_pct": pct,
             "status": traffic_light,
+            "is_demo": any(_is_demo_version(v) for v in model_versions),
         })
     return result

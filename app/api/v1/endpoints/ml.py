@@ -14,10 +14,10 @@ from app.db.session import get_session
 from app.models.user import User
 from app.services.ml_service import (
     ModelNotAvailableError,
-    _inference_tasks,
     _run_inference_bg,
     activate_model,
     count_inferable_zones,
+    create_inference_task,
     generate_synthetic_training_data,
     get_all_models,
     get_inference_status,
@@ -117,11 +117,7 @@ async def run_inference_endpoint(
     estimated: int = await count_inferable_zones(db)
 
     task_id = str(uuid.uuid4())
-    _inference_tasks[task_id] = {
-        "status": "running",
-        "progress_pct": 0,
-        "zones_processed": 0,
-    }
+    await create_inference_task(db, task_id)
     background_tasks.add_task(
         _run_inference_bg,
         task_id,
@@ -140,9 +136,10 @@ async def run_inference_endpoint(
 async def inference_status(
     task_id: str,
     _: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
 ):
     """admin — consulta el estado de una tarea de inferencia."""
-    return get_inference_status(task_id)
+    return await get_inference_status(db, task_id)
 
 
 # ── Recomendaciones ───────────────────────────────────────────────────────────
