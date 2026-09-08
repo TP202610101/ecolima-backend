@@ -600,7 +600,7 @@ async def get_dataset_by_id(db: AsyncSession, dataset_id: int) -> Dataset | None
     return result.scalar_one_or_none()
 
 
-async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
+async def validate_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
     dataset = await get_dataset_by_id(db, dataset_id)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
@@ -623,8 +623,6 @@ async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
 
     dataset.status = "valid" if valid else "invalid"
     dataset.error_summary = error_summary
-    await db.commit()
-    await db.refresh(dataset)
 
     if missing_columns:
         error_rows = len(df)
@@ -633,6 +631,28 @@ async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
         distinct_error_rows = len({err["row_index"] for err in type_errors})
         error_rows = distinct_error_rows
         valid_rows = len(df) - distinct_error_rows
+
+    # Registrar SIEMPRE el intento de validación (válido o inválido) -- antes
+    # no se logueaba nunca, así que /history nunca mostraba "validations".
+    # Mismo patrón que las demás acciones del flujo (edit_cell, commit, etc.):
+    # solo counts/resumen, no las listas completas de errores fila por fila.
+    _create_audit_log_entry(
+        db,
+        user_id=user_id,
+        action="validate",
+        dataset_id=dataset_id,
+        details={
+            "valid": valid,
+            "row_count": len(df),
+            "valid_rows": valid_rows,
+            "error_rows": error_rows,
+            "missing_columns": missing_columns,
+            "type_error_count": len(type_errors),
+            "duplicate_row_count": len(duplicate_rows),
+        },
+    )
+    await db.commit()
+    await db.refresh(dataset)
 
     return {
         "dataset_id": dataset.dataset_id,

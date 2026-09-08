@@ -80,7 +80,7 @@ async def validate_dataset_endpoint(
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    return await validate_dataset(db, dataset_id)
+    return await validate_dataset(db, dataset_id, user.user_id)
 
 
 @router.delete("/{dataset_id}/rows", response_model=DatasetDeleteRowsResponse)
