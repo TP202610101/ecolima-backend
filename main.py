@@ -8,9 +8,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import select, text
 
-from app.api.v1.endpoints import alerts, auth, datasets, public
+from app.api.v1.endpoints import alerts, auth, datasets, geo, ml, ml_service, public, users
 from app.api.v1.endpoints import map as map_
-from app.api.v1.endpoints import ml, ml_service, geo, users
 from app.core.config import Settings
 from app.core.limiter import limiter
 from app.db.session import AsyncSessionLocal

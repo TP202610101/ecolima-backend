@@ -1,6 +1,7 @@
+from geoalchemy2 import Geometry
 from sqlalchemy import Column, Float, Integer, String
 from sqlalchemy.orm import relationship
-from geoalchemy2 import Geometry
+
 from app.db.base import Base
 
 

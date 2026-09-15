@@ -14,3 +14,12 @@ select = [
     "W",  # pycodestyle: advertencias
     "I",  # isort: orden de imports
 ]
+
+[lint.per-file-ignores]
+# Imports sin uso directo intencionales: registran modelos/routers por efecto colateral
+"app/models/__init__.py" = ["F401"]
+"app/api/v1/endpoints/__init__.py" = ["F401"]
+# wildcard import intencional para que Alembic detecte todas las tablas
+"alembic/env.py" = ["F403"]
+# strings de datos sembrados — forzar 120 chars no aporta legibilidad
+"alembic/seeds/seed_demo_data.py" = ["E501"]

@@ -8,13 +8,13 @@ from app.db.session import get_session
 from app.models.user import User
 from app.services.geo_service import (
     get_comparison_geojson,
+    get_coverage_redundancy_data,
     get_district_stats,
     get_districts_geojson,
     get_filtered_points_geojson,
     get_heatmap_geojson,
     get_nearby_points_geojson,
     get_point_by_id_geojson,
-    get_coverage_redundancy_data,
 )
 
 router = APIRouter()

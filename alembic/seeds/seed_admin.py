@@ -1,8 +1,10 @@
+import asyncio
 import os
 import sys
-import asyncio
-from dotenv import load_dotenv
+
 import asyncpg
+from dotenv import load_dotenv
+
 from app.core.security import get_password_hash, validate_password_strength
 
 load_dotenv()

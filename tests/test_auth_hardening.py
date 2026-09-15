@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token, verify_password
 from tests.conftest import auth_headers
 
-
 # ── C2: rate limit de /login ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
