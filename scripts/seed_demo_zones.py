@@ -45,7 +45,10 @@ async def seed_zones(db) -> int:
         print(f"candidate_zones ya tiene {count} filas — no se insertan zonas.")
         return 0
 
-    district_ids = [r[0] for r in (await db.execute(text("SELECT district_id FROM districts ORDER BY district_id"))).fetchall()]
+    district_ids = [
+        r[0]
+        for r in (await db.execute(text("SELECT district_id FROM districts ORDER BY district_id"))).fetchall()
+    ]
     if not district_ids:
         print("ERROR: no hay distritos. Corre primero los seeds (instalar_dependencias.bat).")
         return -1

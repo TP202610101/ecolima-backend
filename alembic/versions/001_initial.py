@@ -1,7 +1,7 @@
 """Initial migration with PostGIS, all tables and indexes.
 
 Revision ID: 001_initial
-Revises: 
+Revises:
 Create Date: 2026-05-27 00:00:00.000000
 """
 
@@ -46,7 +46,12 @@ def upgrade() -> None:
     op.create_table(
         "socioeconomic_indicators",
         sa.Column("soc_id", sa.Integer(), primary_key=True, nullable=False),
-        sa.Column("district_id", sa.Integer(), sa.ForeignKey("districts.district_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "district_id",
+            sa.Integer(),
+            sa.ForeignKey("districts.district_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("year", sa.SmallInteger(), nullable=False),
         sa.Column("population_density", sa.Float(), nullable=False),
         sa.Column("total_population", sa.Integer(), nullable=False),
@@ -68,7 +73,12 @@ def upgrade() -> None:
     op.create_table(
         "waste_generation",
         sa.Column("waste_id", sa.Integer(), primary_key=True, nullable=False),
-        sa.Column("district_id", sa.Integer(), sa.ForeignKey("districts.district_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "district_id",
+            sa.Integer(),
+            sa.ForeignKey("districts.district_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("year", sa.SmallInteger(), nullable=False),
         sa.Column("gpc_kg_per_capita_day", sa.Float(), nullable=False),
         sa.Column("pct_recyclable", sa.Float(), nullable=True),
@@ -86,7 +96,12 @@ def upgrade() -> None:
     op.create_table(
         "recycling_points",
         sa.Column("point_id", sa.Integer(), primary_key=True, nullable=False),
-        sa.Column("district_id", sa.Integer(), sa.ForeignKey("districts.district_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "district_id",
+            sa.Integer(),
+            sa.ForeignKey("districts.district_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("latitude", sa.Float(), nullable=False),
         sa.Column("longitude", sa.Float(), nullable=False),
         sa.Column("geometry", Geometry("POINT", srid=4326), nullable=False),
@@ -107,7 +122,12 @@ def upgrade() -> None:
         sa.Column("centroid_lat", sa.Float(), nullable=False),
         sa.Column("centroid_lon", sa.Float(), nullable=False),
         sa.Column("geometry", Geometry("POLYGON", srid=4326), nullable=False),
-        sa.Column("district_id", sa.Integer(), sa.ForeignKey("districts.district_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "district_id",
+            sa.Integer(),
+            sa.ForeignKey("districts.district_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("cell_area_km2", sa.Float(), nullable=False),
         sa.Column("population_density", sa.Float(), nullable=True),
         sa.Column("income_stratum", sa.SmallInteger(), nullable=True),

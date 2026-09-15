@@ -56,7 +56,10 @@ async def get_current_user(
         # no se silencia, y sí es un 503 legítimo (a diferencia de un JWT
         # inválido, que ahora nunca llega hasta acá).
         logger.exception("Fallo inesperado en get_current_user")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servicio temporalmente no disponible")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Servicio temporalmente no disponible",
+        )
 
 
 async def get_current_user_optional(

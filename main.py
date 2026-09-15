@@ -28,9 +28,14 @@ app.add_middleware(SlowAPIMiddleware)
 # ── CORS ───────────────────────────────────────────────────────────────────────
 _settings = Settings()
 _cors_origins = _settings.get_cors_origins()
+_cors_origin_source = (
+    "CORS_ALLOWED_ORIGINS"
+    if _settings.cors_allowed_origins
+    else "el default hardcodeado (CORS_ALLOWED_ORIGINS no está seteada)"
+)
 logger.info(
     "CORS: usando %s (%d origen(es)): %s",
-    "CORS_ALLOWED_ORIGINS" if _settings.cors_allowed_origins else "el default hardcodeado (CORS_ALLOWED_ORIGINS no está seteada)",
+    _cors_origin_source,
     len(_cors_origins),
     _cors_origins,
 )

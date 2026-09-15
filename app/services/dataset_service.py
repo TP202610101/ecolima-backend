@@ -258,7 +258,14 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
                 continue
 
             if not (min_val <= num_value <= max_val):
-                errors.append({"row_index": row_index, "column": column, "value": num_value, "error": f"Debe estar entre {min_val} y {max_val}."})
+                errors.append(
+                    {
+                        "row_index": row_index,
+                        "column": column,
+                        "value": num_value,
+                        "error": f"Debe estar entre {min_val} y {max_val}.",
+                    }
+                )
 
         for column in ("district_id", "source"):
             if column not in df.columns:
@@ -273,7 +280,14 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
                 try:
                     _coerce_bool(value)
                 except ValueError:
-                    errors.append({"row_index": row_index, "column": "verified", "value": value, "error": "Debe ser bool o convertible a bool"})
+                    errors.append(
+                        {
+                            "row_index": row_index,
+                            "column": "verified",
+                            "value": value,
+                            "error": "Debe ser bool o convertible a bool",
+                        }
+                    )
 
     return errors
 
@@ -747,10 +761,20 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
         # no confiamos únicamente en eso -- una fila fuera de Lima nunca debe
         # llegar a recycling_points.
         if not (LAT_RANGE[0] <= latitude <= LAT_RANGE[1]):
-            errors.append({"row_index": row_index, "error": f"latitude fuera de rango ({LAT_RANGE[0]} a {LAT_RANGE[1]})"})
+            errors.append(
+                {
+                    "row_index": row_index,
+                    "error": f"latitude fuera de rango ({LAT_RANGE[0]} a {LAT_RANGE[1]})",
+                }
+            )
             continue
         if not (LON_RANGE[0] <= longitude <= LON_RANGE[1]):
-            errors.append({"row_index": row_index, "error": f"longitude fuera de rango ({LON_RANGE[0]} a {LON_RANGE[1]})"})
+            errors.append(
+                {
+                    "row_index": row_index,
+                    "error": f"longitude fuera de rango ({LON_RANGE[0]} a {LON_RANGE[1]})",
+                }
+            )
             continue
 
         if district_id not in valid_district_ids:
@@ -922,11 +946,15 @@ async def get_dataset_history(db: AsyncSession, dataset_id: int) -> dict:
             "details": details,
         }
 
-    uploads = [_entry(l) for l in logs if l.action == "upload"]
-    validations = [_entry(l) for l in logs if l.action in ("validate", "validation")]
-    edits = [_entry(l) for l in logs if l.action in ("edit_cell", "delete_rows", "delete_incomplete_rows")]
-    commit_entries = [_entry(l) for l in logs if l.action == "commit"]
-    export_entries = [_entry(l) for l in logs if l.action == "export"]
+    uploads = [_entry(entry) for entry in logs if entry.action == "upload"]
+    validations = [_entry(entry) for entry in logs if entry.action in ("validate", "validation")]
+    edits = [
+        _entry(entry)
+        for entry in logs
+        if entry.action in ("edit_cell", "delete_rows", "delete_incomplete_rows")
+    ]
+    commit_entries = [_entry(entry) for entry in logs if entry.action == "commit"]
+    export_entries = [_entry(entry) for entry in logs if entry.action == "export"]
 
     return {
         "dataset_id": dataset.dataset_id,
