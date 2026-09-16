@@ -324,7 +324,7 @@ def _try_load_from_azure(version: str) -> Any | None:
     """Intenta cargar el modelo desde Azure Blob Storage. Retorna None si falla."""
     try:
         from app.core.config import Settings
-        from app.services.blob_storage import is_configured, get_container_client
+        from app.services.blob_storage import get_container_client, is_configured
         settings = Settings()
         conn_str = settings.azure_blob_connection_string
         # Evitar llamada real si el .env aún tiene el placeholder

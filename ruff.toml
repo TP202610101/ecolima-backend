@@ -1,0 +1,25 @@
+# Config inicial de ruff -- primera vez que el backend tiene lint. A
+# propósito conservadora: reglas equivalentes a flake8 (E/F/W) + isort (I),
+# nada de complejidad/naming/docstrings/type-hints estrictas (C90, N, ANN, D,
+# etc.) todavía -- eso generaría cientos de advertencias de estilo sin valor
+# inmediato en un repo que nunca corrió un linter. Se puede ampliar después.
+
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = [
+    "E",  # pycodestyle: errores
+    "F",  # pyflakes: imports sin usar, nombres no definidos, etc.
+    "W",  # pycodestyle: advertencias
+    "I",  # isort: orden de imports
+]
+
+[lint.per-file-ignores]
+# Imports sin uso directo intencionales: registran modelos/routers por efecto colateral
+"app/models/__init__.py" = ["F401"]
+"app/api/v1/endpoints/__init__.py" = ["F401"]
+# wildcard import intencional para que Alembic detecte todas las tablas
+"alembic/env.py" = ["F403"]
+# strings de datos sembrados — forzar 120 chars no aporta legibilidad
+"alembic/seeds/seed_demo_data.py" = ["E501"]

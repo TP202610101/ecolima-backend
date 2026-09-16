@@ -1,15 +1,17 @@
 import io
 import json
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import require_role, get_current_user
+from app.core.dependencies import get_current_user, require_role
 from app.core.limiter import limiter
 from app.db.session import get_session
 from app.models.user import User
 from app.schemas.dataset import (
     DatasetCommitResponse,
+    DatasetDeleteResponse,
     DatasetDeleteRowsRequest,
     DatasetDeleteRowsResponse,
     DatasetEditCellsRequest,
@@ -23,6 +25,7 @@ from app.schemas.dataset import (
 from app.services.dataset_service import (
     commit_dataset,
     create_dataset_record,
+    delete_dataset,
     delete_dataset_rows,
     delete_incomplete_rows,
     edit_dataset_cells,
@@ -80,7 +83,7 @@ async def validate_dataset_endpoint(
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    return await validate_dataset(db, dataset_id)
+    return await validate_dataset(db, dataset_id, user.user_id)
 
 
 @router.delete("/{dataset_id}/rows", response_model=DatasetDeleteRowsResponse)
@@ -188,6 +191,20 @@ async def export_dataset_endpoint(
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.delete("/{dataset_id}", response_model=DatasetDeleteResponse)
+async def delete_dataset_endpoint(
+    dataset_id: int,
+    user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_session),
+):
+    """admin — elimina un dataset COMPLETO (archivo + registro), no solo
+    filas dentro de él (para eso está DELETE /{id}/rows). Rechaza con 409
+    DATASET_COMMITTED si ya está confirmado: un dataset committed es de una
+    sola vía, revertir sus recycling_points es un runbook de SQL directo,
+    nunca este endpoint."""
+    return await delete_dataset(db=db, dataset_id=dataset_id, user_id=user.user_id)
 
 
 @router.get("/{dataset_id}/history", response_model=DatasetHistoryResponse)

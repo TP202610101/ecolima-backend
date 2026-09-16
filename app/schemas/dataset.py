@@ -37,6 +37,14 @@ class DatasetValidationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DatasetDeleteResponse(BaseModel):
+    deleted: bool
+    dataset_id: int
+    filename: str
+
+    model_config = {"from_attributes": True}
+
+
 class DatasetDeleteRowsRequest(BaseModel):
     row_indices: list[int]
     reason: str

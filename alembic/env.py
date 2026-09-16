@@ -1,11 +1,13 @@
 from __future__ import with_statement
+
 import asyncio
 import os
 from logging.config import fileConfig
+
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
-from alembic import context
 
+from alembic import context
 from app.db.base import Base
 from app.models import *
 

@@ -1,9 +1,9 @@
-import json
 import traceback
+
 from fastapi.testclient import TestClient
 
-from main import app
 from app.core.config import Settings
+from main import app
 
 client = TestClient(app, raise_server_exceptions=True)
 settings = Settings()

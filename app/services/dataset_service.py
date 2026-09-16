@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import HTTPException, status, UploadFile
+from fastapi import HTTPException, UploadFile, status
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit_log import AuditLog
 from app.models.dataset import Dataset
 from app.models.recycling_point import RecyclingPoint
-from app.services.blob_storage import is_configured, get_container_client
+from app.services.blob_storage import get_container_client, is_configured
 
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
@@ -600,7 +600,7 @@ async def get_dataset_by_id(db: AsyncSession, dataset_id: int) -> Dataset | None
     return result.scalar_one_or_none()
 
 
-async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
+async def validate_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
     dataset = await get_dataset_by_id(db, dataset_id)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
@@ -623,8 +623,6 @@ async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
 
     dataset.status = "valid" if valid else "invalid"
     dataset.error_summary = error_summary
-    await db.commit()
-    await db.refresh(dataset)
 
     if missing_columns:
         error_rows = len(df)
@@ -633,6 +631,28 @@ async def validate_dataset(db: AsyncSession, dataset_id: int) -> dict:
         distinct_error_rows = len({err["row_index"] for err in type_errors})
         error_rows = distinct_error_rows
         valid_rows = len(df) - distinct_error_rows
+
+    # Registrar SIEMPRE el intento de validación (válido o inválido) -- antes
+    # no se logueaba nunca, así que /history nunca mostraba "validations".
+    # Mismo patrón que las demás acciones del flujo (edit_cell, commit, etc.):
+    # solo counts/resumen, no las listas completas de errores fila por fila.
+    _create_audit_log_entry(
+        db,
+        user_id=user_id,
+        action="validate",
+        dataset_id=dataset_id,
+        details={
+            "valid": valid,
+            "row_count": len(df),
+            "valid_rows": valid_rows,
+            "error_rows": error_rows,
+            "missing_columns": missing_columns,
+            "type_error_count": len(type_errors),
+            "duplicate_row_count": len(duplicate_rows),
+        },
+    )
+    await db.commit()
+    await db.refresh(dataset)
 
     return {
         "dataset_id": dataset.dataset_id,
@@ -825,6 +845,54 @@ async def export_dataset(
     await db.commit()
 
     return file_bytes, filename
+
+
+async def delete_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
+    """Elimina un dataset COMPLETO (archivo + registro) -- no solo filas
+    dentro de él (para eso está delete_dataset_rows). Mismo principio de
+    inmutabilidad que PATCH /cells y DELETE /rows: un dataset 'committed' no
+    se puede borrar desde acá (_reject_if_committed, 409 DATASET_COMMITTED).
+    Si hace falta revertir puntos reales que vinieron de un dataset ya
+    comprometido, eso es un runbook de SQL directo sobre recycling_points,
+    nunca esta acción -- un commit es de una sola vía.
+
+    audit_log: la FK audit_log.dataset_id -> datasets.dataset_id tiene
+    ON DELETE SET NULL (alembic/versions/001_initial.py:165) -- borrar el
+    dataset NO borra su historial de auditoría, Postgres solo pone
+    dataset_id=NULL en esas filas. Es la decisión correcta: el historial ya
+    construido (upload/validate/edit/commit) sigue teniendo valor como
+    evidencia de lo que se hizo, incluso de un dataset que ya no existe. Por
+    eso esta misma entrada de auditoría de la eliminación repite dataset_id
+    y filename dentro de `details` -- esa copia sobrevive aunque la columna
+    FK termine en NULL por el mismo mecanismo.
+    """
+    dataset = await get_dataset_by_id(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
+    _reject_if_committed(dataset)
+
+    filename = dataset.filename
+    original_filename = dataset.original_filename
+    status_before_delete = dataset.status
+
+    delete_dataset_file(dataset_id)
+
+    _create_audit_log_entry(
+        db,
+        user_id=user_id,
+        action="delete_dataset",
+        dataset_id=dataset_id,
+        details={
+            "dataset_id": dataset_id,
+            "filename": filename,
+            "original_filename": original_filename,
+            "status_before_delete": status_before_delete,
+        },
+    )
+    await db.delete(dataset)
+    await db.commit()
+
+    return {"deleted": True, "dataset_id": dataset_id, "filename": filename}
 
 
 async def get_dataset_history(db: AsyncSession, dataset_id: int) -> dict:

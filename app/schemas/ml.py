@@ -2,7 +2,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 # ── Proxy hacia la API de ecolima-ml (contrato v0.3) ──────────────────────────
 #
 # Tipado según `contrato-ml-api.md` (auditoría de solo lectura del repo

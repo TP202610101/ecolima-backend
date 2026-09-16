@@ -1,7 +1,9 @@
 from datetime import datetime
+
+from geoalchemy2 import Geometry
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
-from geoalchemy2 import Geometry
+
 from app.db.base import Base
 
 

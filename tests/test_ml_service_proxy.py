@@ -7,12 +7,12 @@ ecolima-ml esté corriendo. Valida contrato, auth y mapeo de errores (503/502).
 import pytest
 from httpx import AsyncClient
 
-from main import app
 from app.services.ml_api_client import (
     MLApiError,
     MLApiUnavailableError,
     get_ml_api_client,
 )
+from main import app
 from tests.conftest import auth_headers
 
 

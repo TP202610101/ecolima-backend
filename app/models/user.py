@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.base import Base
 
 
