@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash
 from app.models.user import User
+from app.services.dataset_service import log_action
 
 _LAST_ADMIN_ERROR_DETAIL = {
     "code": "LAST_ADMIN",
@@ -90,7 +91,14 @@ async def update_user_role(
         )
     if new_role != "admin" and await _is_last_active_admin(db, user):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LAST_ADMIN_ERROR_DETAIL)
+    previous_role = user.role
     user.role = new_role
+    log_action(
+        db,
+        acting_user_id,
+        "update_user_role",
+        details={"target_user_id": user.user_id, "previous_role": previous_role, "new_role": new_role},
+    )
     await db.commit()
     await db.refresh(user)
     return user
