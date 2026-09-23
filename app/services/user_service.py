@@ -117,9 +117,16 @@ async def set_user_active(
     _reject_if_other_admin(user, acting_user_id)
     if not is_active and await _is_last_active_admin(db, user):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LAST_ADMIN_ERROR_DETAIL)
+    previous_active = user.is_active
     user.is_active = is_active
     if not is_active:
         user.token_version = (user.token_version or 0) + 1
+    log_action(
+        db,
+        acting_user_id,
+        "set_user_active",
+        details={"target_user_id": user.user_id, "previous_active": previous_active, "new_active": is_active},
+    )
     await db.commit()
     await db.refresh(user)
     return user
