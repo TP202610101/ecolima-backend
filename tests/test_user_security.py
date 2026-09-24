@@ -24,6 +24,8 @@ No tocan Neon de forma permanente: los usuarios de prueba se borran en el
 teardown; el/los admin(s) reales que se desactivan temporalmente para simular
 el escenario de "último admin" se restauran antes de terminar el test.
 """
+import json
+
 import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
@@ -284,5 +286,100 @@ async def test_create_new_admin_still_allowed(
         assert resp.status_code == 201
         assert resp.json()["role"] == "admin"
     finally:
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+# ── Trazabilidad: update_user_role / set_user_active registran en audit_log ──
+# Cierra el gap detectado en la auditoria de cobertura de hoy: ambos fixes
+# (commits edccc27, 1b2d3ae) solo se habian verificado con scripts manuales
+# que ya no viven en el repo -- estos tests dejan esa verificacion permanente
+# en la suite.
+
+async def test_update_user_role_writes_audit_log_entry(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    email = "pytest_audit_update_role@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "analista")
+
+        resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/role",
+            json={"role": "admin"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+
+        row = (await db_session.execute(
+            text(
+                "SELECT action, details FROM audit_log "
+                "WHERE action = 'update_user_role' "
+                "AND (details::jsonb ->> 'target_user_id')::int = :id "
+                "ORDER BY audit_id DESC LIMIT 1"
+            ),
+            {"id": target_id},
+        )).first()
+
+        assert row is not None, "No se encontró entrada de audit_log para update_user_role"
+        details = json.loads(row.details)
+        assert details == {
+            "target_user_id": target_id,
+            "previous_role": "analista",
+            "new_role": "admin",
+        }
+    finally:
+        await db_session.execute(
+            text("DELETE FROM audit_log WHERE (details::jsonb ->> 'target_user_id')::int = :id"),
+            {"id": target_id},
+        )
+        await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
+        await db_session.commit()
+
+
+async def test_set_user_active_writes_audit_log_entry(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    """Prueba ambas transiciones (desactivar y reactivar) sobre un target
+    analista -- a diferencia de update_user_role, esto NO queda bloqueado por
+    ADMIN_IMMUTABLE en la segunda llamada, porque el target nunca pasa a ser
+    admin (confirmado en la auditoría de ayer, no asumido)."""
+    email = "pytest_audit_set_active@example.com"
+    try:
+        target_id = await _create_user(client, admin_token, email, "analista")
+
+        deactivate_resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/status",
+            json={"is_active": False},
+            headers=auth_headers(admin_token),
+        )
+        assert deactivate_resp.status_code == 200
+
+        reactivate_resp = await client.patch(
+            f"/api/v1/admin/users/{target_id}/status",
+            json={"is_active": True},
+            headers=auth_headers(admin_token),
+        )
+        assert reactivate_resp.status_code == 200
+
+        rows = (await db_session.execute(
+            text(
+                "SELECT details FROM audit_log "
+                "WHERE action = 'set_user_active' "
+                "AND (details::jsonb ->> 'target_user_id')::int = :id "
+                "ORDER BY audit_id ASC"
+            ),
+            {"id": target_id},
+        )).fetchall()
+
+        assert len(rows) == 2, f"Esperaba 2 entradas (desactivar + reactivar), encontré {len(rows)}"
+        first = json.loads(rows[0].details)
+        second = json.loads(rows[1].details)
+        assert first == {"target_user_id": target_id, "previous_active": True, "new_active": False}
+        assert second == {"target_user_id": target_id, "previous_active": False, "new_active": True}
+    finally:
+        await db_session.execute(
+            text("DELETE FROM audit_log WHERE (details::jsonb ->> 'target_user_id')::int = :id"),
+            {"id": target_id},
+        )
         await db_session.execute(text("DELETE FROM users WHERE email = :email"), {"email": email})
         await db_session.commit()
