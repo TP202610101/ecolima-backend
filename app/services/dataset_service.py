@@ -698,7 +698,18 @@ def log_action(
 
 
 async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
-    dataset = await get_dataset_by_id(db, dataset_id)
+    # SELECT ... FOR UPDATE sobre la fila puntual del dataset -- serializa
+    # cualquier commit concurrente sobre el MISMO dataset. Un segundo intento
+    # simplemente espera este lock (en vez de correr el loop de inserción en
+    # paralelo) y, al obtenerlo, ve status='committed' ya escrito por el
+    # primero -- ver auditoria de concurrencia, hallazgo #2 (doble commit
+    # podía duplicar recycling_points). El lock se libera solo al hacer
+    # commit/rollback de esta transacción (incluido un rollback implícito si
+    # la función lanza una excepción a mitad de camino).
+    result = await db.execute(
+        select(Dataset).where(Dataset.dataset_id == dataset_id).with_for_update()
+    )
+    dataset = result.scalar_one_or_none()
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
 
