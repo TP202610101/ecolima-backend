@@ -524,6 +524,14 @@ async def calculate_coverage_gaps(db: AsyncSession) -> dict:
     con la distancia mínima al recycling_point más cercano para cada celda.
     FROM-subquery calcula la distancia una sola vez por zona.
     ::geography garantiza metros exactos, no grados.
+
+    Distancia medida desde el CENTROIDE de la zona (ST_Centroid), no desde el
+    borde del polígono -- ST_Distance contra el polígono da 0 apenas el punto
+    cae dentro de la celda, lo que en la práctica dejaba la mayoría de zonas
+    recomendadas en "Dentro del área · 0 m". Se usa ST_Centroid(geometry) al
+    vuelo (no las columnas centroid_lat/centroid_lon) porque esas columnas ya
+    tuvieron un bug de desincronización con el polígono real (ver auditoría
+    de candidate_zones) -- el polígono es la fuente de verdad.
     """
     result = await db.execute(
         text("""
@@ -535,7 +543,7 @@ async def calculate_coverage_gaps(db: AsyncSession) -> dict:
                 SELECT
                     cz2.zone_id,
                     MIN(
-                        ST_Distance(rp.geometry::geography, cz2.geometry::geography)
+                        ST_Distance(rp.geometry::geography, ST_Centroid(cz2.geometry)::geography)
                     ) AS dist_m
                 FROM candidate_zones cz2
                 CROSS JOIN recycling_points rp
