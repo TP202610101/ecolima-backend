@@ -8,6 +8,7 @@ import pandas as pd
 from fastapi import HTTPException, UploadFile, status
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
@@ -26,6 +27,17 @@ OPTIONAL_COLUMNS = ["point_type", "address", "operator", "materials_accepted", "
 # únicamente en que /validate se haya corrido antes).
 LAT_RANGE = (-13.0, -11.5)
 LON_RANGE = (-77.5, -76.5)
+
+# Límites de longitud de string tomados DEL MODELO (no hardcodeados) -- si la
+# columna cambia de tamaño en una futura migración, esta validación se ajusta
+# sola sin tocar este archivo. Solo columnas String(N) de RecyclingPoint que
+# el dataset puede poblar (address/materials_accepted son Text, sin límite).
+# Ver auditoría del commit fallido de dataset_id=26 (source VARCHAR(50) hacía
+# fallar el INSERT completo sin que /validate lo hubiera detectado antes).
+_STRING_LENGTH_COLUMNS: dict[str, int] = {
+    col: getattr(RecyclingPoint, col).type.length
+    for col in ("source", "point_type", "operator")
+}
 
 
 def _get_file_extension(filename: str) -> str:
@@ -273,6 +285,23 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
             value = row[column]
             if _is_blank(value):
                 errors.append({"row_index": row_index, "column": column, "value": value, "error": "Valor faltante"})
+
+        for column, max_len in _STRING_LENGTH_COLUMNS.items():
+            if column not in df.columns:
+                continue
+            value = row[column]
+            if _is_blank(value):
+                continue
+            length = len(str(value))
+            if length > max_len:
+                errors.append(
+                    {
+                        "row_index": row_index,
+                        "column": column,
+                        "value": value,
+                        "error": f"Excede el largo máximo de {max_len} caracteres (tiene {length}).",
+                    }
+                )
 
         if "verified" in df.columns:
             value = row["verified"]
@@ -840,7 +869,30 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
         dataset_id,
         {"inserted": inserted, "skipped_duplicates": skipped_duplicates, "error_count": len(errors)},
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except DBAPIError as exc:
+        # Defensa en profundidad: /validate ya chequea longitud de string
+        # contra el modelo (ver _STRING_LENGTH_COLUMNS), pero esto cubre
+        # cualquier otra restricción de BD que escape esa validación (ej. un
+        # tipo de dato inesperado) -- sin esto, la excepción subía sin
+        # manejar y terminaba en un 500 genérico que el frontend mostraba
+        # como "Sin conexión" (ver auditoría del commit fallido de
+        # dataset_id=26, StringDataRightTruncationError en source VARCHAR).
+        await db.rollback()
+        orig = getattr(exc, "orig", None)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "DB_CONSTRAINT_ERROR",
+                "message": "El commit falló por una restricción de la base de datos "
+                           "(ej. un valor demasiado largo para su columna). "
+                           "Revisa los datos del CSV y volvé a intentar.",
+                "table": getattr(orig, "table_name", None),
+                "column": getattr(orig, "column_name", None),
+                "db_error": str(orig) if orig is not None else str(exc),
+            },
+        )
 
     return {"inserted": inserted, "skipped_duplicates": skipped_duplicates, "errors": errors}
 
