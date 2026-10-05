@@ -225,3 +225,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Respaldos manuales de la BD (pg_dump) -- nunca a git, son binarios y pueden
+# pesar varios MB.
+backups/
