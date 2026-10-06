@@ -8,6 +8,7 @@ import pandas as pd
 from fastapi import HTTPException, UploadFile, status
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
@@ -26,6 +27,17 @@ OPTIONAL_COLUMNS = ["point_type", "address", "operator", "materials_accepted", "
 # únicamente en que /validate se haya corrido antes).
 LAT_RANGE = (-13.0, -11.5)
 LON_RANGE = (-77.5, -76.5)
+
+# Límites de longitud de string tomados DEL MODELO (no hardcodeados) -- si la
+# columna cambia de tamaño en una futura migración, esta validación se ajusta
+# sola sin tocar este archivo. Solo columnas String(N) de RecyclingPoint que
+# el dataset puede poblar (address/materials_accepted son Text, sin límite).
+# Ver auditoría del commit fallido de dataset_id=26 (source VARCHAR(50) hacía
+# fallar el INSERT completo sin que /validate lo hubiera detectado antes).
+_STRING_LENGTH_COLUMNS: dict[str, int] = {
+    col: getattr(RecyclingPoint, col).type.length
+    for col in ("source", "point_type", "operator")
+}
 
 
 def _get_file_extension(filename: str) -> str:
@@ -258,7 +270,14 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
                 continue
 
             if not (min_val <= num_value <= max_val):
-                errors.append({"row_index": row_index, "column": column, "value": num_value, "error": f"Debe estar entre {min_val} y {max_val}."})
+                errors.append(
+                    {
+                        "row_index": row_index,
+                        "column": column,
+                        "value": num_value,
+                        "error": f"Debe estar entre {min_val} y {max_val}.",
+                    }
+                )
 
         for column in ("district_id", "source"):
             if column not in df.columns:
@@ -267,13 +286,37 @@ def _validate_types(df: pd.DataFrame) -> list[dict]:
             if _is_blank(value):
                 errors.append({"row_index": row_index, "column": column, "value": value, "error": "Valor faltante"})
 
+        for column, max_len in _STRING_LENGTH_COLUMNS.items():
+            if column not in df.columns:
+                continue
+            value = row[column]
+            if _is_blank(value):
+                continue
+            length = len(str(value))
+            if length > max_len:
+                errors.append(
+                    {
+                        "row_index": row_index,
+                        "column": column,
+                        "value": value,
+                        "error": f"Excede el largo máximo de {max_len} caracteres (tiene {length}).",
+                    }
+                )
+
         if "verified" in df.columns:
             value = row["verified"]
             if not pd.isna(value):
                 try:
                     _coerce_bool(value)
                 except ValueError:
-                    errors.append({"row_index": row_index, "column": "verified", "value": value, "error": "Debe ser bool o convertible a bool"})
+                    errors.append(
+                        {
+                            "row_index": row_index,
+                            "column": "verified",
+                            "value": value,
+                            "error": "Debe ser bool o convertible a bool",
+                        }
+                    )
 
     return errors
 
@@ -684,7 +727,18 @@ def log_action(
 
 
 async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dict:
-    dataset = await get_dataset_by_id(db, dataset_id)
+    # SELECT ... FOR UPDATE sobre la fila puntual del dataset -- serializa
+    # cualquier commit concurrente sobre el MISMO dataset. Un segundo intento
+    # simplemente espera este lock (en vez de correr el loop de inserción en
+    # paralelo) y, al obtenerlo, ve status='committed' ya escrito por el
+    # primero -- ver auditoria de concurrencia, hallazgo #2 (doble commit
+    # podía duplicar recycling_points). El lock se libera solo al hacer
+    # commit/rollback de esta transacción (incluido un rollback implícito si
+    # la función lanza una excepción a mitad de camino).
+    result = await db.execute(
+        select(Dataset).where(Dataset.dataset_id == dataset_id).with_for_update()
+    )
+    dataset = result.scalar_one_or_none()
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset no encontrado.")
 
@@ -747,10 +801,20 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
         # no confiamos únicamente en eso -- una fila fuera de Lima nunca debe
         # llegar a recycling_points.
         if not (LAT_RANGE[0] <= latitude <= LAT_RANGE[1]):
-            errors.append({"row_index": row_index, "error": f"latitude fuera de rango ({LAT_RANGE[0]} a {LAT_RANGE[1]})"})
+            errors.append(
+                {
+                    "row_index": row_index,
+                    "error": f"latitude fuera de rango ({LAT_RANGE[0]} a {LAT_RANGE[1]})",
+                }
+            )
             continue
         if not (LON_RANGE[0] <= longitude <= LON_RANGE[1]):
-            errors.append({"row_index": row_index, "error": f"longitude fuera de rango ({LON_RANGE[0]} a {LON_RANGE[1]})"})
+            errors.append(
+                {
+                    "row_index": row_index,
+                    "error": f"longitude fuera de rango ({LON_RANGE[0]} a {LON_RANGE[1]})",
+                }
+            )
             continue
 
         if district_id not in valid_district_ids:
@@ -805,7 +869,30 @@ async def commit_dataset(db: AsyncSession, dataset_id: int, user_id: int) -> dic
         dataset_id,
         {"inserted": inserted, "skipped_duplicates": skipped_duplicates, "error_count": len(errors)},
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except DBAPIError as exc:
+        # Defensa en profundidad: /validate ya chequea longitud de string
+        # contra el modelo (ver _STRING_LENGTH_COLUMNS), pero esto cubre
+        # cualquier otra restricción de BD que escape esa validación (ej. un
+        # tipo de dato inesperado) -- sin esto, la excepción subía sin
+        # manejar y terminaba en un 500 genérico que el frontend mostraba
+        # como "Sin conexión" (ver auditoría del commit fallido de
+        # dataset_id=26, StringDataRightTruncationError en source VARCHAR).
+        await db.rollback()
+        orig = getattr(exc, "orig", None)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "DB_CONSTRAINT_ERROR",
+                "message": "El commit falló por una restricción de la base de datos "
+                           "(ej. un valor demasiado largo para su columna). "
+                           "Revisa los datos del CSV y volvé a intentar.",
+                "table": getattr(orig, "table_name", None),
+                "column": getattr(orig, "column_name", None),
+                "db_error": str(orig) if orig is not None else str(exc),
+            },
+        )
 
     return {"inserted": inserted, "skipped_duplicates": skipped_duplicates, "errors": errors}
 
@@ -922,11 +1009,15 @@ async def get_dataset_history(db: AsyncSession, dataset_id: int) -> dict:
             "details": details,
         }
 
-    uploads = [_entry(l) for l in logs if l.action == "upload"]
-    validations = [_entry(l) for l in logs if l.action in ("validate", "validation")]
-    edits = [_entry(l) for l in logs if l.action in ("edit_cell", "delete_rows", "delete_incomplete_rows")]
-    commit_entries = [_entry(l) for l in logs if l.action == "commit"]
-    export_entries = [_entry(l) for l in logs if l.action == "export"]
+    uploads = [_entry(entry) for entry in logs if entry.action == "upload"]
+    validations = [_entry(entry) for entry in logs if entry.action in ("validate", "validation")]
+    edits = [
+        _entry(entry)
+        for entry in logs
+        if entry.action in ("edit_cell", "delete_rows", "delete_incomplete_rows")
+    ]
+    commit_entries = [_entry(entry) for entry in logs if entry.action == "commit"]
+    export_entries = [_entry(entry) for entry in logs if entry.action == "export"]
 
     return {
         "dataset_id": dataset.dataset_id,

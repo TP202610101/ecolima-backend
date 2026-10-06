@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from fastapi import HTTPException, status
 from sqlalchemy import and_, delete, func, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.candidate_zone import CandidateZone
@@ -654,10 +655,53 @@ async def run_inference(
     return result
 
 
+_INFERENCE_ALREADY_RUNNING_DETAIL = {
+    "code": "INFERENCE_ALREADY_RUNNING",
+    "message": "Ya hay una corrida de inferencia en curso. Esperá a que termine antes de lanzar otra.",
+}
+
+
 async def create_inference_task(db: AsyncSession, task_id: str) -> None:
-    """Crea la fila inicial de una tarea de inferencia (status='running')."""
+    """Crea la fila inicial de una tarea de inferencia (status='running').
+
+    Auditoria de concurrencia, hallazgo #4: antes no había ninguna guardia
+    contra un doble disparo de /ml/run-inference. La garantía real es el
+    índice único parcial `ix_inference_tasks_single_running` (a lo sumo una
+    fila con status='running'); un chequeo de solo aplicación (SELECT antes
+    de INSERT) sería racy igual que el hallazgo del "último admin". El
+    IntegrityError de esa constraint se traduce acá a 409.
+
+    Antes de intentar el INSERT, se barren tareas 'running' huérfanas (sin
+    updates hace más de ORPHAN_TASK_TIMEOUT_MINUTES, ej. por un reinicio
+    del servidor a mitad de una corrida) -- mismo criterio que ya usa
+    get_inference_status(). Sin este barrido, una tarea huérfana dejaría el
+    índice único bloqueando para siempre cualquier corrida nueva.
+    """
+    stale_cutoff = datetime.utcnow() - timedelta(minutes=ORPHAN_TASK_TIMEOUT_MINUTES)
+    stale_tasks = (
+        await db.execute(
+            select(InferenceTask).where(
+                InferenceTask.status == "running",
+                InferenceTask.updated_at < stale_cutoff,
+            )
+        )
+    ).scalars().all()
+    if stale_tasks:
+        for stale in stale_tasks:
+            stale.status = "error"
+            stale.result_json = json.dumps({
+                "error": "Tarea interrumpida: sin actualizaciones de progreso por más de "
+                         f"{ORPHAN_TASK_TIMEOUT_MINUTES} minutos (probable reinicio del servidor)."
+            })
+            stale.updated_at = datetime.utcnow()
+        await db.commit()
+
     db.add(InferenceTask(task_id=task_id, status="running", progress_pct=0, zones_processed=0))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_INFERENCE_ALREADY_RUNNING_DETAIL)
 
 
 async def _finish_inference_task(
@@ -913,6 +957,7 @@ async def get_model_metrics(db: AsyncSession, version_name: str) -> dict:
         comparison = {
             "version_name": prev_row.version_name,
             "metrics":      prev_metrics,
+            # Métricas ausentes en cualquiera de las dos versiones se omiten del delta sin avisar.
             "delta": {
                 k: round(float(metrics.get(k, 0)) - float(prev_metrics.get(k, 0)), 4)
                 for k in metrics

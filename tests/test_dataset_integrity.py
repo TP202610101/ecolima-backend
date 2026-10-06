@@ -31,7 +31,11 @@ async def cleanup_recycling_points(db_session: AsyncSession):
     """Borra los recycling_points que un commit exitoso haya insertado durante
     el test (cleanup_datasets no los toca -- solo borra el dataset/archivo)."""
     yield
-    await db_session.execute(text("DELETE FROM recycling_points WHERE source = :s"), {"s": _TEST_SOURCE})
+    # LIKE con prefijo, no igualdad exacta -- algunos tests (ej. el de source
+    # largo) insertan un source que EMPIEZA con _TEST_SOURCE pero le agrega
+    # texto extra; con igualdad exacta esas filas quedaban huérfanas y
+    # contaminaban tests siguientes que reusan las mismas coordenadas.
+    await db_session.execute(text("DELETE FROM recycling_points WHERE source LIKE :s"), {"s": f"{_TEST_SOURCE}%"})
     await db_session.commit()
 
 
@@ -239,3 +243,55 @@ async def test_validate_reports_duplicate_coordinates_as_warning_not_blocking(
     assert data["valid"] is True  # advertencia, no bloquea
     assert len(data["duplicate_rows"]) == 1
     assert sorted(data["duplicate_rows"][0]["row_indices"]) == [0, 1]
+
+
+# ── Regresión: source largo rompía el commit sin que /validate avisara ──────
+# dataset_id=26 (60 puntos reales de reciclaje) falló en producción porque
+# "source" podía superar los 50 caracteres de la columna (VARCHAR) y
+# /validate no lo detectaba -- el INSERT fallaba recién al comprometer, con
+# StringDataRightTruncationError, y el frontend lo mostraba como "Sin
+# conexión". Fix: VARCHAR(50) -> VARCHAR(150) + chequeo de longitud en
+# _validate_types tomado del modelo (no hardcodeado).
+
+async def test_validate_rejects_source_longer_than_column_limit(
+    client: AsyncClient, admin_token: str, cleanup_datasets: list[int]
+):
+    too_long_source = "R" * 151  # 1 por encima del nuevo límite (VARCHAR(150))
+    raw = _csv(f"-12.05,-77.02,150101,{too_long_source}\n")
+    dataset_id = await _upload(client, admin_token, raw)
+    cleanup_datasets.append(dataset_id)
+
+    resp = await client.get(f"/api/v1/datasets/{dataset_id}/validate", headers=auth_headers(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["valid"] is False
+    source_errors = [e for e in data["type_errors"] if e["column"] == "source"]
+    assert len(source_errors) == 1
+    assert "150" in source_errors[0]["error"]
+
+
+async def test_commit_succeeds_with_a_realistic_long_source_within_new_limit(
+    client: AsyncClient, admin_token: str, cleanup_datasets: list[int], cleanup_recycling_points
+):
+    """El caso real que rompió dataset_id=26: una fuente tipo
+    'Real - Santiago de Surco - prensa_verificar - Perú21 (...)' (88
+    caracteres) -- entraba en VARCHAR(50), ahora entra cómodo en 150."""
+    long_realistic_source = (
+        f"{_TEST_SOURCE} - Santiago de Surco - prensa_verificar - "
+        "Perú21 (comunicado Municipalidad de Surco)"
+    )
+    assert 50 < len(long_realistic_source) <= 150
+    raw = _csv(f"-12.0501,-77.0201,150101,{long_realistic_source}\n")
+    dataset_id = await _upload(client, admin_token, raw)
+    cleanup_datasets.append(dataset_id)
+
+    validate_resp = await client.get(f"/api/v1/datasets/{dataset_id}/validate", headers=auth_headers(admin_token))
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["valid"] is True
+
+    commit_resp = await client.patch(
+        f"/api/v1/datasets/{dataset_id}", json={"status": "committed"}, headers=auth_headers(admin_token)
+    )
+    assert commit_resp.status_code == 200
+    assert commit_resp.json()["inserted"] == 1

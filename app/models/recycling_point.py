@@ -20,7 +20,7 @@ class RecyclingPoint(Base):
     operator = Column(String(100), nullable=True)
     materials_accepted = Column(Text, nullable=True)
     verified = Column(Boolean, nullable=False, default=False)
-    source = Column(String(50), nullable=False)
+    source = Column(String(150), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     district = relationship("District", back_populates="recycling_points")

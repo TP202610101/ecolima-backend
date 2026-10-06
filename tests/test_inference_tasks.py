@@ -4,6 +4,7 @@ Persistencia del estado de tareas de inferencia ML en Postgres (tabla
 inference_tasks), en reemplazo del dict en memoria (_inference_tasks) que se
 perdía en cada reinicio del worker gunicorn.
 """
+import asyncio
 import uuid
 from datetime import datetime, timedelta
 
@@ -11,7 +12,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from httpx import AsyncClient
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.inference_task import InferenceTask
@@ -187,3 +188,82 @@ async def test_inference_status_endpoint_returns_404_for_unknown_task(
         headers=auth_headers(admin_token),
     )
     assert resp.status_code == 404
+
+
+# ── Auditoria de concurrencia, hallazgo #4 ──────────────────────────────────
+# Antes no habia ninguna guardia contra un doble disparo de /ml/run-inference:
+# dos peticiones casi simultaneas podian encolar dos tareas 'running' a la
+# vez. El fix agrega un indice unico parcial en BD (a lo sumo una fila
+# status='running') + un barrido de tareas huerfanas antes de insertar, para
+# no quedar bloqueado para siempre si una corrida anterior crasheo sin
+# terminar. Estos tests usan dos sesiones/engines independientes (como dos
+# requests reales, cada una con su propia conexion asyncpg) disparadas con
+# asyncio.gather -- concurrencia real, no secuencial.
+
+async def test_two_simultaneous_create_inference_task_only_one_succeeds(
+    cleanup_inference_tasks: list[str],
+):
+    task_id_a = _new_task_id()
+    task_id_b = _new_task_id()
+    cleanup_inference_tasks.extend([task_id_a, task_id_b])
+
+    SessionA, engine_a = _make_test_session_factory()
+    SessionB, engine_b = _make_test_session_factory()
+
+    async def _create(session_factory, task_id):
+        async with session_factory() as db:
+            await create_inference_task(db, task_id)
+
+    try:
+        results = await asyncio.gather(
+            _create(SessionA, task_id_a), _create(SessionB, task_id_b), return_exceptions=True
+        )
+    finally:
+        await engine_a.dispose()
+        await engine_b.dispose()
+
+    successes = [r for r in results if r is None]
+    failures = [r for r in results if isinstance(r, HTTPException)]
+    assert len(successes) == 1, f"Esperaba exactamente 1 éxito, obtuve resultados: {results}"
+    assert len(failures) == 1, f"Esperaba exactamente 1 rechazo, obtuve resultados: {results}"
+    assert failures[0].status_code == 409
+    assert failures[0].detail["code"] == "INFERENCE_ALREADY_RUNNING"
+
+    SessionCheck, engine_check = _make_test_session_factory()
+    try:
+        async with SessionCheck() as db:
+            running = (
+                await db.execute(select(InferenceTask).where(InferenceTask.status == "running"))
+            ).scalars().all()
+            assert len(running) == 1
+            assert running[0].task_id in (task_id_a, task_id_b)
+    finally:
+        await engine_check.dispose()
+
+
+async def test_orphaned_running_task_does_not_block_a_new_one_forever(
+    db_session: AsyncSession, cleanup_inference_tasks: list[str]
+):
+    """Una tarea 'running' huerfana (sin updates hace mas de
+    ORPHAN_TASK_TIMEOUT_MINUTES) no debe dejar el indice unico bloqueando
+    para siempre -- create_inference_task debe barrerla (marcarla 'error')
+    antes de insertar la nueva."""
+    orphan_id = _new_task_id()
+    cleanup_inference_tasks.append(orphan_id)
+    await create_inference_task(db_session, orphan_id)
+
+    stale_time = datetime.utcnow() - timedelta(minutes=ORPHAN_TASK_TIMEOUT_MINUTES + 1)
+    await db_session.execute(
+        update(InferenceTask).where(InferenceTask.task_id == orphan_id).values(updated_at=stale_time)
+    )
+    await db_session.commit()
+
+    new_id = _new_task_id()
+    cleanup_inference_tasks.append(new_id)
+    await create_inference_task(db_session, new_id)  # no debe lanzar 409
+
+    orphan_status = await get_inference_status(db_session, orphan_id)
+    assert orphan_status["status"] == "error"
+
+    new_status = await get_inference_status(db_session, new_id)
+    assert new_status["status"] == "running"

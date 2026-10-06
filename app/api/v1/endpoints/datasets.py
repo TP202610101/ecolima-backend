@@ -128,7 +128,12 @@ async def edit_dataset_cells_endpoint(
     user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    return await edit_dataset_cells(db=db, dataset_id=dataset_id, edits=[edit.model_dump() for edit in payload.edits], user_id=user.user_id)
+    return await edit_dataset_cells(
+        db=db,
+        dataset_id=dataset_id,
+        edits=[edit.model_dump() for edit in payload.edits],
+        user_id=user.user_id,
+    )
 
 
 @router.get("", response_model=list[DatasetListItem])
