@@ -1,4 +1,20 @@
 from app.models.alert import Alert
+from app.models.analisis import (
+    ConcordanciaMcda,
+    CriterioMcda,
+    DistritoAnalisis,
+    Fuente,
+    Mcda,
+    McdaMontecarlo,
+    MetricaSemilla,
+    ModeloAnalisis,
+    PesoMcda,
+    Propension,
+    Sitio,
+    SitioFeature,
+    Tamizaje,
+    VersionAnalisis,
+)
 from app.models.audit_log import AuditLog
 from app.models.candidate_zone import CandidateZone
 from app.models.dataset import Dataset

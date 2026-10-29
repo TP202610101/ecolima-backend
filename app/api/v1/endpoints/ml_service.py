@@ -1,4 +1,8 @@
-"""Endpoints proxy hacia la API de ecolima-ml (contrato v0.3).
+"""DEPRECATED — las rutas /ml/service/* quedan reemplazadas por el importador
+del paquete versionado y los endpoints /api/v1/analisis/*. No se borran ni
+cambian de comportamiento todavía.
+
+Endpoints proxy hacia la API de ecolima-ml (contrato v0.3).
 
 Estos endpoints exponen el servicio ML externo (repo ecolima-ml) a través del
 backend, de modo que ecolima-frontend nunca hable directo con ecolima-ml.
@@ -59,7 +63,12 @@ async def ml_service_health(
     _: User = Depends(get_current_user),
     client: MLApiClient = Depends(get_ml_api_client),
 ):
-    """Auth (todos) — estado del servicio ML externo y del modelo cargado."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    Auth (todos) — estado del servicio ML externo y del modelo cargado.
+    """
     try:
         return await client.health(model_name=model_name)
     except (MLApiUnavailableError, MLApiError) as exc:
@@ -72,7 +81,12 @@ async def ml_service_metadata(
     _: User = Depends(get_current_user),
     client: MLApiClient = Depends(get_ml_api_client),
 ):
-    """Auth (todos) — metadata y umbral del modelo servido por ecolima-ml."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    Auth (todos) — metadata y umbral del modelo servido por ecolima-ml.
+    """
     try:
         return await client.model_metadata(model_name=model_name)
     except (MLApiUnavailableError, MLApiError) as exc:
@@ -87,7 +101,12 @@ async def ml_service_predict(
     _: User = Depends(require_role("admin")),
     client: MLApiClient = Depends(get_ml_api_client),
 ):
-    """admin — predicción para una zona candidata (opcionalmente con explicación SHAP)."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    admin — predicción para una zona candidata (opcionalmente con explicación SHAP).
+    """
     try:
         return await client.predict(
             zone=payload.zone.model_dump(exclude_none=True),
@@ -107,7 +126,12 @@ async def ml_service_predict_batch(
     _: User = Depends(require_role("admin")),
     client: MLApiClient = Depends(get_ml_api_client),
 ):
-    """admin — predicción batch para zonas candidatas."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    admin — predicción batch para zonas candidatas.
+    """
     try:
         return await client.predict_batch(
             zones=[z.model_dump(exclude_none=True) for z in payload.zones],
@@ -126,7 +150,12 @@ async def ml_service_recommendations(
     _: User = Depends(require_role("admin")),
     client: MLApiClient = Depends(get_ml_api_client),
 ):
-    """admin — ranking top-N de zonas candidatas según el modelo externo."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    admin — ranking top-N de zonas candidatas según el modelo externo.
+    """
     try:
         return await client.recommendations(
             zones=[z.model_dump(exclude_none=True) for z in payload.zones],

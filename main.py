@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import select, text
 
-from app.api.v1.endpoints import alerts, auth, datasets, geo, ml, ml_service, public, users
+from app.api.v1.endpoints import alerts, analisis, auth, datasets, geo, ml, ml_service, public, users
 from app.api.v1.endpoints import map as map_
 from app.core.config import Settings
 from app.core.limiter import limiter
@@ -72,6 +72,8 @@ app.include_router(ml.router,       prefix="/api/v1/ml",           tags=["ml"])
 app.include_router(ml_service.router, prefix="/api/v1/ml/service",  tags=["ml-service"])
 app.include_router(geo.router,      prefix="/api/v1/geo",          tags=["geo"])
 app.include_router(alerts.router,   prefix="/api/v1/alerts",       tags=["alerts"])
+# Resultados V1 importados del paquete versionado (solo lectura).
+app.include_router(analisis.router, prefix="/api/v1/analisis",     tags=["analisis"])
 
 # ÚNICA superficie pública sin JWT junto al modo "cercanos" de /map/points --
 # ver app/api/v1/endpoints/public.py para el porqué y las restricciones.

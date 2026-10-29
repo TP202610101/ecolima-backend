@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings
 # get_cors_origins). Son los orígenes que ya funcionan en producción hoy.
 DEFAULT_CORS_ORIGINS: list[str] = [
     "http://localhost:5173",
+    "https://agreeable-pond-03717200f.4.azurestaticapps.net",
     "https://mango-cliff-03aa6110f.7.azurestaticapps.net",
 ]
 
@@ -66,3 +67,6 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # Claves del .env que Settings no declara (p. ej. FRONTEND_URL) se
+        # ignoran en vez de impedir el arranque.
+        extra = "ignore"
