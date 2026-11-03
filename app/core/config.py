@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     smtp_pass: str | None = None
     admin_email: str
     admin_password: str
+    # Dominio del frontend (sin barra final), para construir el enlace de
+    # recuperación de contraseña: {frontend_base_url}/restablecer?token=...
+    frontend_base_url: str
     # Solo usada por scripts/create_analista.py (cuenta de prueba local) --
     # opcional porque no todos los entornos crean esa cuenta.
     analista_password: str | None = None

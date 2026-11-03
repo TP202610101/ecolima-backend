@@ -43,3 +43,14 @@ class TokenResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    # Política completa se valida en el endpoint vía validate_password_strength,
+    # mismo motivo que UserCreate.password más arriba.
+    new_password: str

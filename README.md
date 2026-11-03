@@ -99,6 +99,7 @@ placeholders — **nunca pegar secretos reales en este archivo ni en el repo**.
 | `CORS_ALLOWED_ORIGINS` | No | Orígenes CORS permitidos, separados por coma, sin barra final. Si no se setea, se usa una lista default hardcodeada en `config.py` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Sí | Usuario admin creado por `seed_admin.py`. La contraseña debe cumplir la política: 8+ caracteres, mayúscula, minúscula y número |
 | `ANALISTA_PASSWORD` | No | Solo usada por `scripts/create_analista.py` (cuenta de prueba local) |
+| `FRONTEND_BASE_URL` | Sí | Dominio del frontend (sin barra final), usado para construir el enlace de `POST /auth/forgot-password` (`{FRONTEND_BASE_URL}/restablecer?token=...`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No (`30`) | Minutos de validez del JWT |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | No | Envío de alertas de redundancia de cobertura por email. Sin configurar, las alertas quedan solo en BD (no falla, se omite el envío) |
 | `ML_INFERENCE_THRESHOLD` | No (`0.5`) | Umbral de clasificación binaria del modelo |
@@ -129,7 +130,7 @@ app/
 └── services/          # Lógica de negocio -- una función por caso de uso.
 
 alembic/
-├── versions/          # Migraciones (7 al momento de escribir esto).
+├── versions/          # Migraciones (11 al momento de escribir esto).
 └── seeds/             # Scripts de siembra: distritos, admin, datos demo.
 
 scripts/                # Utilitarios operativos sueltos (reset_admin,
@@ -149,7 +150,7 @@ Dominios de alto nivel (prefijo `/api/v1/...` salvo `/health`, que es raíz):
 
 | Prefijo | Dominio |
 |---|---|
-| `/auth` | Login, logout |
+| `/auth` | Login, logout, recuperación de contraseña (`forgot-password` / `reset-password`) |
 | `/admin/users` | Gestión de usuarios (crear, cambiar rol, activar/desactivar) — rol `admin` |
 | `/datasets` | Carga, validación y confirmación de datasets CSV/XLSX de puntos de reciclaje |
 | `/map` | Consultas GeoJSON para el mapa (puntos, distritos, heatmap, redundancia de cobertura) |
@@ -168,7 +169,7 @@ Todos los endpoints salvo `/public/*` y `/health` requieren JWT (`Authorization:
 make test          # equivale a: pytest (sin flags -- pytest.ini fija testpaths=tests)
 ```
 
-17 archivos, 120 tests (118 pasan, 2 se saltan por requerir el servicio
+23 archivos, 232 tests (230 pasan, 2 se saltan por requerir el servicio
 externo `ecolima-ml` levantado). Corren como tests de integración reales
 sobre HTTP (`httpx.AsyncClient` + ASGI transport), contra una base de datos
 Postgres real accesible vía `DATABASE_URL` — no hay mocks de base de datos.
