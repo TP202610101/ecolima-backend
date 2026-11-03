@@ -101,7 +101,7 @@ placeholders — **nunca pegar secretos reales en este archivo ni en el repo**.
 | `ANALISTA_PASSWORD` | No | Solo usada por `scripts/create_analista.py` (cuenta de prueba local) |
 | `FRONTEND_BASE_URL` | Sí | Dominio del frontend (sin barra final), usado para construir el enlace de `POST /auth/forgot-password` (`{FRONTEND_BASE_URL}/restablecer?token=...`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No (`30`) | Minutos de validez del JWT |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | No | Envío de alertas de redundancia de cobertura por email. Sin configurar, las alertas quedan solo en BD (no falla, se omite el envío) |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | No | Envío de alertas de redundancia de cobertura, recuperación de contraseña e invitaciones de `bulk/confirm` por email. Sin configurar: recuperación de contraseña omite el envío sin fallar (respuesta siempre neutra); `bulk/confirm` sí reporta cada cuenta en `invitations_failed` (la cuenta y su token de invitación quedan creados igual, solo no se pudo avisar por correo) |
 | `ML_INFERENCE_THRESHOLD` | No (`0.5`) | Umbral de clasificación binaria del modelo |
 | `ML_PRIORITY_HIGH` / `ML_PRIORITY_MEDIUM` | No (`0.7` / `0.4`) | Umbrales de `priority_label` |
 | `ML_API_URL` | No (`http://localhost:8001`) | URL del servicio externo `ecolima-ml`, para cuando la inferencia remota esté activa |
@@ -151,7 +151,7 @@ Dominios de alto nivel (prefijo `/api/v1/...` salvo `/health`, que es raíz):
 | Prefijo | Dominio |
 |---|---|
 | `/auth` | Login, logout, recuperación de contraseña (`forgot-password` / `reset-password`) |
-| `/admin/users` | Gestión de usuarios (crear, cambiar rol, activar/desactivar) — rol `admin` |
+| `/admin/users` | Gestión de usuarios (crear, cambiar rol, activar/desactivar, carga masiva por CSV vía `bulk/validate` y `bulk/confirm`) — rol `admin` |
 | `/me/avisos` | Estado y confirmación de lectura de los tres avisos de ayuda del Análisis ("cómo se ordenan", "fuentes y limitaciones", "acerca del modelo") — cualquier usuario autenticado, solo sobre sí mismo. El backend nunca bloquea nada, solo guarda y consulta confirmaciones |
 | `/admin/avisos` | Reporte de qué cuentas activas (admin o analista) confirmaron un aviso y cuándo — rol `admin` |
 | `/datasets` | Carga, validación y confirmación de datasets CSV/XLSX de puntos de reciclaje |
@@ -165,13 +165,28 @@ Dominios de alto nivel (prefijo `/api/v1/...` salvo `/health`, que es raíz):
 
 Todos los endpoints salvo `/public/*` y `/health` requieren JWT (`Authorization: Bearer <token>`).
 
+**Carga masiva de usuarios** (`/admin/users/bulk/validate` y `/bulk/confirm`):
+CSV con cabecera `correo,nombre,rol` (separador `,` o `;`, UTF-8 con BOM
+opcional, máximo 1 MB / 200 filas). Solo crea cuentas rol `analista`, con una
+contraseña aleatoria que nadie conoce -- el acceso es siempre vía el enlace de
+invitación (`{FRONTEND_BASE_URL}/restablecer?token=...`, mismo mecanismo y
+tabla que recuperar contraseña, pero con 48 horas de vigencia). En local, sin
+`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS` configurados, el envío
+siempre falla (cada cuenta aparece en `invitations_failed`) y **no hay forma
+de recuperar el enlace real** -- el token nunca se escribe en el log, a
+propósito. Para probar el flujo completo en local hay dos caminos: (a)
+configurar `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS` con un proveedor
+real de prueba, o (b) seguir el mismo patrón que usan los tests
+(`tests/test_bulk_users.py`), sobreescribiendo `get_invitation_sender` con
+`app.dependency_overrides` para capturar la URL sin tocar SMTP.
+
 ## Tests
 
 ```bash
 make test          # equivale a: pytest (sin flags -- pytest.ini fija testpaths=tests)
 ```
 
-24 archivos, 247 tests (245 pasan, 2 se saltan por requerir el servicio
+25 archivos, 272 tests (270 pasan, 2 se saltan por requerir el servicio
 externo `ecolima-ml` levantado). Corren como tests de integración reales
 sobre HTTP (`httpx.AsyncClient` + ASGI transport), contra una base de datos
 Postgres real accesible vía `DATABASE_URL` — no hay mocks de base de datos.
