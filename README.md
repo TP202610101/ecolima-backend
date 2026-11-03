@@ -130,7 +130,7 @@ app/
 └── services/          # Lógica de negocio -- una función por caso de uso.
 
 alembic/
-├── versions/          # Migraciones (11 al momento de escribir esto).
+├── versions/          # Migraciones (12 al momento de escribir esto).
 └── seeds/             # Scripts de siembra: distritos, admin, datos demo.
 
 scripts/                # Utilitarios operativos sueltos (reset_admin,
@@ -152,6 +152,8 @@ Dominios de alto nivel (prefijo `/api/v1/...` salvo `/health`, que es raíz):
 |---|---|
 | `/auth` | Login, logout, recuperación de contraseña (`forgot-password` / `reset-password`) |
 | `/admin/users` | Gestión de usuarios (crear, cambiar rol, activar/desactivar) — rol `admin` |
+| `/me/avisos` | Estado y confirmación de lectura de los tres avisos de ayuda del Análisis ("cómo se ordenan", "fuentes y limitaciones", "acerca del modelo") — cualquier usuario autenticado, solo sobre sí mismo. El backend nunca bloquea nada, solo guarda y consulta confirmaciones |
+| `/admin/avisos` | Reporte de qué cuentas activas (admin o analista) confirmaron un aviso y cuándo — rol `admin` |
 | `/datasets` | Carga, validación y confirmación de datasets CSV/XLSX de puntos de reciclaje |
 | `/map` | Consultas GeoJSON para el mapa (puntos, distritos, heatmap, redundancia de cobertura) |
 | `/ml` | Recomendaciones, ejecución de inferencia, gestión de versiones del modelo |
@@ -169,7 +171,7 @@ Todos los endpoints salvo `/public/*` y `/health` requieren JWT (`Authorization:
 make test          # equivale a: pytest (sin flags -- pytest.ini fija testpaths=tests)
 ```
 
-23 archivos, 232 tests (230 pasan, 2 se saltan por requerir el servicio
+24 archivos, 247 tests (245 pasan, 2 se saltan por requerir el servicio
 externo `ecolima-ml` levantado). Corren como tests de integración reales
 sobre HTTP (`httpx.AsyncClient` + ASGI transport), contra una base de datos
 Postgres real accesible vía `DATABASE_URL` — no hay mocks de base de datos.

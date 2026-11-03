@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import select, text
 
-from app.api.v1.endpoints import alerts, analisis, auth, datasets, geo, ml, ml_service, public, users
+from app.api.v1.endpoints import alerts, analisis, auth, avisos, datasets, geo, ml, ml_service, public, users
 from app.api.v1.endpoints import map as map_
 from app.core.config import Settings
 from app.core.limiter import limiter
@@ -66,6 +66,8 @@ async def log_requests(request: Request, call_next):
 # ── Routers ────────────────────────────────────────────────────────────────────
 app.include_router(auth.router,     prefix="/api/v1/auth",         tags=["auth"])
 app.include_router(users.router,    prefix="/api/v1/admin/users",  tags=["users"])
+app.include_router(avisos.router,       prefix="/api/v1/me",           tags=["avisos"])
+app.include_router(avisos.admin_router, prefix="/api/v1/admin/avisos", tags=["avisos"])
 app.include_router(datasets.router, prefix="/api/v1/datasets",     tags=["datasets"])
 app.include_router(map_.router,     prefix="/api/v1/map",          tags=["map"])
 app.include_router(ml.router,       prefix="/api/v1/ml",           tags=["ml"])

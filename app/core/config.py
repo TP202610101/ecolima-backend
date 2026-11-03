@@ -11,6 +11,17 @@ DEFAULT_CORS_ORIGINS: list[str] = [
     "https://mango-cliff-03aa6110f.7.azurestaticapps.net",
 ]
 
+# Claves de aviso permitidas para /me/avisos y /admin/avisos/confirmaciones.
+# El contenido de cada aviso vive en el frontend (son los tres modales de
+# ayuda del Análisis); el backend solo valida que la clave sea una de estas
+# antes de guardar o consultar una confirmación. Agregar un aviso nuevo es
+# agregar una clave acá.
+AVISO_CLAVES_PERMITIDAS: list[str] = [
+    "como-se-ordenan",
+    "fuentes-limitaciones",
+    "acerca-del-modelo",
+]
+
 
 class Settings(BaseSettings):
     database_url: str

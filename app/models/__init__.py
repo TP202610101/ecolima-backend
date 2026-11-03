@@ -1,4 +1,5 @@
 from app.models.alert import Alert
+from app.models.aviso_confirmacion import AvisoConfirmacion
 from app.models.analisis import (
     ConcordanciaMcda,
     CriterioMcda,
