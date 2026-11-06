@@ -101,7 +101,7 @@ placeholders — **nunca pegar secretos reales en este archivo ni en el repo**.
 | `ANALISTA_PASSWORD` | No | Solo usada por `scripts/create_analista.py` (cuenta de prueba local) |
 | `FRONTEND_BASE_URL` | Sí | Dominio del frontend (sin barra final), usado para construir el enlace de `POST /auth/forgot-password` (`{FRONTEND_BASE_URL}/restablecer?token=...`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No (`30`) | Minutos de validez del JWT |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | No | Envío de alertas de redundancia de cobertura, recuperación de contraseña e invitaciones de `bulk/confirm` por email. Sin configurar: recuperación de contraseña omite el envío sin fallar (respuesta siempre neutra); `bulk/confirm` sí reporta cada cuenta en `invitations_failed` (la cuenta y su token de invitación quedan creados igual, solo no se pudo avisar por correo) |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | No | Envío de alertas de redundancia de cobertura, recuperación de contraseña e invitaciones de `bulk/confirm` por email. Sin configurar: recuperación de contraseña omite el envío sin fallar (respuesta siempre neutra); `bulk/confirm` sí reporta cada cuenta en `invitations_failed` (la cuenta y su token de invitación quedan creados igual, solo no se pudo avisar por correo). Al cambiar de cuenta de Gmail solo cambian `SMTP_USER` y `SMTP_PASS` -- el remitente (`From`) sale del propio `SMTP_USER`, no hay una variable aparte. `SMTP_PASS` acepta la contraseña de aplicación tal como Google la muestra (con espacios); se limpia sola. `SMTP_PORT` admite `587` (STARTTLS) o `465` (SSL directo) |
 | `ML_INFERENCE_THRESHOLD` | No (`0.5`) | Umbral de clasificación binaria del modelo |
 | `ML_PRIORITY_HIGH` / `ML_PRIORITY_MEDIUM` | No (`0.7` / `0.4`) | Umbrales de `priority_label` |
 | `ML_API_URL` | No (`http://localhost:8001`) | URL del servicio externo `ecolima-ml`, para cuando la inferencia remota esté activa |
@@ -186,7 +186,7 @@ real de prueba, o (b) seguir el mismo patrón que usan los tests
 make test          # equivale a: pytest (sin flags -- pytest.ini fija testpaths=tests)
 ```
 
-25 archivos, 272 tests (270 pasan, 2 se saltan por requerir el servicio
+27 archivos, 279 tests (277 pasan, 2 se saltan por requerir el servicio
 externo `ecolima-ml` levantado). Corren como tests de integración reales
 sobre HTTP (`httpx.AsyncClient` + ASGI transport), contra una base de datos
 Postgres real accesible vía `DATABASE_URL` — no hay mocks de base de datos.

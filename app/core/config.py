@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     smtp_port: int | None = None
     smtp_user: str | None = None
     smtp_pass: str | None = None
+
+    @field_validator("smtp_pass")
+    @classmethod
+    def smtp_pass_sin_espacios(cls, v: str | None) -> str | None:
+        """Google muestra la contraseña de aplicación en 4 grupos separados
+        por espacio para que se lea -- si se pega tal cual en el .env o en
+        Azure, hay que unirla. Quita también espacios al inicio/final."""
+        if v is None:
+            return v
+        return v.replace(" ", "")
     admin_email: str
     admin_password: str
     # Dominio del frontend (sin barra final), para construir el enlace de

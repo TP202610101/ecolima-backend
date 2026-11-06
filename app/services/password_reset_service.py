@@ -136,11 +136,21 @@ async def _send_via_smtp(smtp: dict, msg: MIMEMultipart, to_email: str, log_labe
     silenciarse (recuperar-contraseña, por la respuesta neutra) o reportarse
     (invitaciones, que sí necesitan saber qué correo falló)."""
     def _send_sync() -> None:
-        with smtplib.SMTP(smtp["host"], int(smtp["port"])) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(smtp["user"], smtp["pass"])
-            server.send_message(msg)
+        port = int(smtp["port"])
+        # 465 espera TLS desde el primer byte de la conexión (SMTPS); el resto
+        # (587, el puerto recomendado por Gmail, u otro) usa STARTTLS sobre una
+        # conexión en texto plano. No es configurable aparte -- se infiere del
+        # puerto, igual que hacen la mayoría de clientes SMTP.
+        if port == 465:
+            with smtplib.SMTP_SSL(smtp["host"], port) as server:
+                server.login(smtp["user"], smtp["pass"])
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp["host"], port) as server:
+                server.ehlo()
+                server.starttls()
+                server.login(smtp["user"], smtp["pass"])
+                server.send_message(msg)
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _send_sync)
