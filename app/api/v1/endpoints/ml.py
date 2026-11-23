@@ -32,6 +32,9 @@ router = APIRouter()
 
 
 # ── Training set ──────────────────────────────────────────────────────────────
+# DEPRECATED: las rutas /ml/training-set/* quedan reemplazadas por el importador
+# del paquete versionado y los endpoints /api/v1/analisis/*. No se borran ni
+# cambian de comportamiento todavía.
 
 @router.get("/training-set/export")
 async def training_set_export(
@@ -39,6 +42,9 @@ async def training_set_export(
     db: AsyncSession = Depends(get_session),
 ):
     """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
     admin — exporta candidate_zones etiquetadas como CSV para LightGBM.
     Incluye: zone_id, centroid_lat, centroid_lon, Sección B (20 features), is_suitable.
     NUNCA incluye: Sección C (ml_score, priority_label, …) ni geometry.
@@ -59,7 +65,12 @@ async def training_set_stats(
     _: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_session),
 ):
-    """admin — estadísticas del dataset de entrenamiento."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    admin — estadísticas del dataset de entrenamiento.
+    """
     return await get_training_set_stats(db)
 
 
@@ -68,7 +79,12 @@ async def training_set_simulate(
     n: int = 250,
     _: User = Depends(require_role("admin")),
 ):
-    """admin — genera n filas sintéticas con distribuciones realistas para Lima (max 1000)."""
+    """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
+    admin — genera n filas sintéticas con distribuciones realistas para Lima (max 1000).
+    """
     df = generate_synthetic_training_data(n=min(n, 1000))
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
     filename = f"grid_lima_synthetic_{date_str}.csv"
@@ -81,6 +97,9 @@ async def training_set_simulate(
 
 
 # ── Inferencia ────────────────────────────────────────────────────────────────
+# DEPRECATED: POST /ml/run-inference queda reemplazado por el importador del
+# paquete versionado y los endpoints /api/v1/analisis/*. No se borra ni cambia
+# de comportamiento todavía. (GET /inference-status/{task_id} no se marca aquí.)
 
 class RunInferenceRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
@@ -98,6 +117,9 @@ async def run_inference_endpoint(
     db: AsyncSession = Depends(get_session),
 ):
     """
+    DEPRECATED — reemplazado por el importador del paquete versionado y los
+    endpoints /api/v1/analisis/*.
+
     admin — lanza la inferencia LightGBM como BackgroundTask.
     Retorna inmediatamente con task_id. Consultar estado en GET /inference-status/{task_id}.
     Requiere que exista un modelo cargable (Azure Blob o models/lightgbm_model.pkl).

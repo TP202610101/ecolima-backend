@@ -1,4 +1,8 @@
-"""Cliente HTTP hacia la API de ecolima-ml (contrato v0.3).
+"""DEPRECATED — este módulo queda reemplazado por el importador del paquete
+versionado y los endpoints /api/v1/analisis/*. No se borra ni cambia de
+comportamiento todavía.
+
+Cliente HTTP hacia la API de ecolima-ml (contrato v0.3).
 
 ecolima-backend consume el servicio ML por HTTP (decisión de arquitectura
 2026-07-01): los repos quedan desacoplados y cada uno se despliega por

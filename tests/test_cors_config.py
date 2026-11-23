@@ -36,4 +36,5 @@ def test_default_cors_origins_includes_current_production_frontend():
     """El fallback debe seguir permitiendo el dominio que hoy funciona en
     producción -- este cambio no puede romper CORS para el frontend actual."""
     assert "https://mango-cliff-03aa6110f.7.azurestaticapps.net" in DEFAULT_CORS_ORIGINS
+    assert "https://agreeable-pond-03717200f.4.azurestaticapps.net" in DEFAULT_CORS_ORIGINS
     assert "http://localhost:5173" in DEFAULT_CORS_ORIGINS

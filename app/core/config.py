@@ -7,7 +7,19 @@ from pydantic_settings import BaseSettings
 # get_cors_origins). Son los orígenes que ya funcionan en producción hoy.
 DEFAULT_CORS_ORIGINS: list[str] = [
     "http://localhost:5173",
+    "https://agreeable-pond-03717200f.4.azurestaticapps.net",
     "https://mango-cliff-03aa6110f.7.azurestaticapps.net",
+]
+
+# Claves de aviso permitidas para /me/avisos y /admin/avisos/confirmaciones.
+# El contenido de cada aviso vive en el frontend (son los tres modales de
+# ayuda del Análisis); el backend solo valida que la clave sea una de estas
+# antes de guardar o consultar una confirmación. Agregar un aviso nuevo es
+# agregar una clave acá.
+AVISO_CLAVES_PERMITIDAS: list[str] = [
+    "como-se-ordenan",
+    "fuentes-limitaciones",
+    "acerca-del-modelo",
 ]
 
 
@@ -37,8 +49,21 @@ class Settings(BaseSettings):
     smtp_port: int | None = None
     smtp_user: str | None = None
     smtp_pass: str | None = None
+
+    @field_validator("smtp_pass")
+    @classmethod
+    def smtp_pass_sin_espacios(cls, v: str | None) -> str | None:
+        """Google muestra la contraseña de aplicación en 4 grupos separados
+        por espacio para que se lea -- si se pega tal cual en el .env o en
+        Azure, hay que unirla. Quita también espacios al inicio/final."""
+        if v is None:
+            return v
+        return v.replace(" ", "")
     admin_email: str
     admin_password: str
+    # Dominio del frontend (sin barra final), para construir el enlace de
+    # recuperación de contraseña: {frontend_base_url}/restablecer?token=...
+    frontend_base_url: str
     # Solo usada por scripts/create_analista.py (cuenta de prueba local) --
     # opcional porque no todos los entornos crean esa cuenta.
     analista_password: str | None = None
@@ -66,3 +91,6 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # Claves del .env que Settings no declara (p. ej. FRONTEND_URL) se
+        # ignoran en vez de impedir el arranque.
+        extra = "ignore"

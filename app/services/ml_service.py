@@ -1,3 +1,11 @@
+"""DEPRECATED — este módulo queda reemplazado por el importador del paquete
+versionado y los endpoints /api/v1/analisis/*. No se borra ni cambia de
+comportamiento todavía.
+
+Aún lo usan rutas ML vigentes (/ml/recommendations, /ml/models,
+/ml/inference-status) y geo_service, por eso sigue en pie.
+"""
+
 import asyncio
 import json
 import logging

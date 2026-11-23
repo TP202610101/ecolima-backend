@@ -1,15 +1,28 @@
+import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings
-from app.core.limiter import limiter
-from app.db.session import get_session
-from app.services.dataset_service import delete_dataset_file
-from main import app
+from app.core.db_guard import motivo_rechazo_entorno_pruebas
+
+# Fail-closed: antes de importar la app (y de abrir cualquier conexión) la
+# configuración efectiva debe apuntar a una base PostgreSQL local de pruebas,
+# sin Azure Blob ni API ML remotos. Las variables de entorno tienen prioridad
+# sobre el .env; si el .env apunta a Neon y no se sobrescribe, la suite se
+# aborta aquí sin conectarse.
+_motivo_rechazo = motivo_rechazo_entorno_pruebas(Settings())
+if _motivo_rechazo:
+    pytest.exit(f"Pruebas abortadas antes de conectar: {_motivo_rechazo}")
+
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import NullPool  # noqa: E402
+
+from app.core.limiter import limiter  # noqa: E402
+from app.db.session import get_session  # noqa: E402
+from app.services.dataset_service import delete_dataset_file  # noqa: E402
+from main import app  # noqa: E402
 
 # Prefijo obligatorio para cualquier archivo subido por un test. Permite
 # identificar y limpiar datasets de prueba, incluidos huérfanos dejados por

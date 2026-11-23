@@ -1,4 +1,8 @@
 """
+DEPRECATED — este módulo queda reemplazado por el importador del paquete
+versionado y los endpoints /api/v1/analisis/*. No se borra ni cambia de
+comportamiento todavía.
+
 Mapeo puro: fila de candidate_zones (Sección B) -> payload `zone` que espera
 POST /predict de ecolima-ml.
 
